@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 import time
-from collections.abc import AsyncIterator, Awaitable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
@@ -20,6 +22,13 @@ from sqlmodel import select
 
 from app.agents.director import Director, DirectorHint
 from app.agents.guest import generate_guest_response
+from app.memory.profile import (
+    compare_with_previous_session,
+    load_or_create_profile,
+    previous_top3_advice,
+    save_profile,
+    update_profile,
+)
 from app.models import (
     FactState as FactStateRow,
     Report,
@@ -31,6 +40,7 @@ from app.models import (
     utc_now,
 )
 from app.schemas import Dossier, FactState, GuestOutput
+from app.tools.stenographer import Metrics, calculate_metrics
 
 
 DEFAULT_BRIEFING_SECONDS = 60.0
@@ -72,6 +82,10 @@ class SessionNotFound(OrchestratorError):
     pass
 
 
+class ReportNotFound(OrchestratorError):
+    pass
+
+
 class InvalidSessionState(OrchestratorError):
     pass
 
@@ -98,6 +112,7 @@ class DirectorAgent(Protocol):
         host_message: str,
         guest_output: GuestOutput | Awaitable[GuestOutput],
         trace_id: str,
+        chronic_weaknesses: Sequence[str],
     ) -> DirectorHint | str | None: ...
 
 
@@ -161,6 +176,9 @@ class Judge:
         *,
         dossier: Dossier,
         transcript: Transcript,
+        metrics: Metrics | None = None,
+        trace_id: str = "judge",
+        previous_top3_advice: Sequence[str] = (),
     ) -> JudgeResult:
         host_turns = [turn for turn in transcript.turns if turn.role == TurnRole.host]
         guest_turns = [turn for turn in transcript.turns if turn.role == TurnRole.guest]
@@ -191,7 +209,10 @@ class JudgeAgent(Protocol):
         *,
         dossier: Dossier,
         transcript: Transcript,
-    ) -> JudgeResult: ...
+        metrics: Metrics,
+        trace_id: str,
+        previous_top3_advice: Sequence[str],
+    ) -> BaseModel: ...
 
 
 class ServerEvent(BaseModel):
@@ -206,6 +227,7 @@ class ServerEvent(BaseModel):
 class CreateSessionRequest(BaseModel):
     scenario_id: str = Field(min_length=1)
     persona_id: str = Field(min_length=1)
+    student_id: str = Field(default="demo-student", min_length=1)
 
 
 class TurnRequest(BaseModel):
@@ -216,6 +238,7 @@ class SessionSnapshot(BaseModel):
     id: str
     scenario_id: str
     persona_id: str
+    student_id: str
     state: SessionState
     surface_bio: str
     persona_name: str
@@ -236,6 +259,9 @@ class _SessionRuntime:
     id: str
     dossier: Dossier
     persona_id: str
+    student_id: str
+    chronic_weaknesses: list[str]
+    previous_advice: list[str]
     duration_seconds: float
     briefing_seconds: float
     wrapping_seconds: float
@@ -294,6 +320,7 @@ class Orchestrator:
         self,
         scenario_id: str,
         persona_id: str,
+        student_id: str = "demo-student",
     ) -> SessionSnapshot:
         with DatabaseSession(self.engine) as db:
             scenario = db.get(Scenario, scenario_id)
@@ -305,8 +332,16 @@ class Orchestrator:
                     f"persona {persona_id!r} is not available for scenario {scenario_id!r}"
                 )
 
+            profile = load_or_create_profile(db, student_id)
+            save_profile(db, profile)
             session_id = uuid4().hex
-            db.add(InterviewSession(id=session_id, scenario_id=scenario_id))
+            db.add(
+                InterviewSession(
+                    id=session_id,
+                    scenario_id=scenario_id,
+                    profile_id=student_id,
+                )
+            )
             for fact in dossier.facts:
                 db.add(
                     FactStateRow(
@@ -323,6 +358,9 @@ class Orchestrator:
             id=session_id,
             dossier=dossier,
             persona_id=persona_id,
+            student_id=student_id,
+            chronic_weaknesses=list(profile.chronic_weaknesses),
+            previous_advice=previous_top3_advice(profile),
             duration_seconds=self.duration_seconds,
             briefing_seconds=self.briefing_seconds,
             wrapping_seconds=self.wrapping_seconds,
@@ -374,6 +412,7 @@ class Orchestrator:
                     host_message=normalized_text,
                     guest_output=guest_task,
                     trace_id=f"{trace_id}-director",
+                    chronic_weaknesses=runtime.chronic_weaknesses,
                 ),
             )
             if not isinstance(guest_output, GuestOutput):
@@ -464,6 +503,16 @@ class Orchestrator:
     def get_state_history(self, session_id: str) -> list[SessionState]:
         return list(self._runtime(session_id).state_history)
 
+    def get_review(self, report_id: str) -> dict[str, Any]:
+        with DatabaseSession(self.engine) as db:
+            report = db.get(Report, report_id)
+        if report is None:
+            raise ReportNotFound(f"report not found: {report_id}")
+        public_review = report.content_json.get("public_review")
+        if not isinstance(public_review, dict):
+            raise ReportNotFound(f"report has no public review: {report_id}")
+        return public_review
+
     async def events(self, session_id: str) -> AsyncIterator[ServerEvent]:
         runtime = self._runtime(session_id)
         queue: asyncio.Queue[ServerEvent] = asyncio.Queue()
@@ -541,22 +590,81 @@ class Orchestrator:
         transcript = await self.stenographer.transcribe(turns)
         if not isinstance(transcript, Transcript):
             raise TypeError("stenographer.transcribe() must return Transcript")
-        result = await self.judge.review(
-            dossier=runtime.dossier,
-            transcript=transcript,
+
+        fact_states = self._load_fact_states(runtime.id)
+        facts_by_id = {fact.id: fact for fact in runtime.dossier.facts}
+        metric_fact_states = [
+            {
+                **state.model_dump(mode="json"),
+                "juiciness": facts_by_id[state.fact_id].juiciness,
+            }
+            for state in fact_states
+        ]
+        metrics = calculate_metrics(turns, metric_fact_states)
+
+        review_kwargs: dict[str, Any] = {
+            "dossier": runtime.dossier,
+            "transcript": transcript,
+        }
+        review_parameters = inspect.signature(self.judge.review).parameters
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in review_parameters.values()
         )
-        if not isinstance(result, JudgeResult):
-            raise TypeError("judge.review() must return JudgeResult")
+        if accepts_kwargs or "metrics" in review_parameters:
+            review_kwargs["metrics"] = metrics
+        if accepts_kwargs or "trace_id" in review_parameters:
+            review_kwargs["trace_id"] = f"session-{runtime.id}-judge"
+        if accepts_kwargs or "previous_top3_advice" in review_parameters:
+            review_kwargs["previous_top3_advice"] = runtime.previous_advice
+        result = await self.judge.review(**review_kwargs)
+        if not isinstance(result, BaseModel):
+            raise TypeError("judge.review() must return a Pydantic model")
+
+        result_data = result.model_dump(mode="json")
+        dimensions = result_data.get("dims", [])
+        if not isinstance(dimensions, list):
+            dimensions = []
+        advice = result_data.get("top3_advice", [])
+        if not isinstance(advice, list):
+            advice = []
+        total_score = result_data.get("total")
+        if not isinstance(total_score, (int, float)) or isinstance(total_score, bool):
+            total_score = None
 
         report_id = uuid4().hex
         with DatabaseSession(self.engine) as db:
+            profile = load_or_create_profile(db, runtime.student_id)
+            comparison = compare_with_previous_session(profile, dimensions)
+            updated_profile = update_profile(
+                profile,
+                metrics,
+                runtime.persona_id,
+                total_score,
+                top3_advice=advice,
+                dimensions=dimensions,
+                session_id=runtime.id,
+            )
+            save_profile(db, updated_profile)
+            public_review = _build_public_review(
+                report_id=report_id,
+                runtime=runtime,
+                turns=turns,
+                fact_states=fact_states,
+                metrics=metrics,
+                review=result_data,
+                comparison=comparison,
+            )
             db.add(
                 Report(
                     id=report_id,
                     session_id=runtime.id,
                     content_json={
                         "transcript": transcript.model_dump(mode="json"),
-                        "review": result.model_dump(mode="json"),
+                        "metrics": metrics.model_dump(mode="json"),
+                        "review": result_data,
+                        "comparison": comparison,
+                        "public_review": public_review,
                     },
                 )
             )
@@ -709,6 +817,7 @@ class Orchestrator:
             id=runtime.id,
             scenario_id=runtime.dossier.scenario_id,
             persona_id=runtime.persona_id,
+            student_id=runtime.student_id,
             state=runtime.state,
             surface_bio=runtime.dossier.surface_bio,
             persona_name=runtime.dossier.persona.name,
@@ -716,6 +825,170 @@ class Orchestrator:
             briefing_seconds=round(runtime.briefing_seconds),
             report_id=runtime.report_id,
         )
+
+
+def _build_public_review(
+    *,
+    report_id: str,
+    runtime: _SessionRuntime,
+    turns: Sequence[Mapping[str, Any]],
+    fact_states: Sequence[FactState],
+    metrics: Metrics,
+    review: Mapping[str, Any],
+    comparison: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Translate internal report artifacts into the review page contract."""
+
+    raw_dimensions = review.get("dims", [])
+    dimensions = [
+        {
+            "name": str(item.get("name", "")),
+            "score": item.get("score", 0),
+            "max": item.get("max", 1),
+        }
+        for item in raw_dimensions
+        if isinstance(item, Mapping)
+    ] if isinstance(raw_dimensions, Sequence) else []
+    total = review.get("total", sum(item["score"] for item in dimensions))
+    if not isinstance(total, (int, float)) or isinstance(total, bool):
+        total = 0
+
+    revealed_by_id = {state.fact_id: state.revealed for state in fact_states}
+    dossier = [
+        {
+            "id": fact.id,
+            "content": fact.content,
+            "juiciness": fact.juiciness,
+            "status": "found" if revealed_by_id.get(fact.id) == "full" else "missed",
+            "unlockHint": fact.unlock_hint,
+        }
+        for fact in runtime.dossier.facts
+    ]
+
+    rounds: list[dict[str, Any]] = []
+    active: dict[str, Any] | None = None
+    for turn in turns:
+        role = turn.get("role")
+        if hasattr(role, "value"):
+            role = role.value
+        role = str(role).rsplit(".", 1)[-1]
+        if role == "host":
+            if active is not None:
+                rounds.append(active)
+            active = {
+                "round": len(rounds) + 1,
+                "timestamp": _relative_turn_time(turns, turn),
+                "host": str(turn.get("content", "")),
+                "guest": "",
+                "studentAction": str(turn.get("content", "")),
+                "followed": False,
+            }
+        elif role == "guest" and active is not None:
+            active["guest"] = str(turn.get("content", ""))
+            metadata = turn.get("meta_json", {})
+            if isinstance(metadata, Mapping):
+                guest_output = metadata.get("guest_output", {})
+                if isinstance(guest_output, Mapping) and guest_output.get("stage_direction"):
+                    active["stageDirection"] = str(guest_output["stage_direction"])
+        elif role == "director" and active is not None:
+            active["director"] = str(turn.get("content", ""))
+    if active is not None:
+        rounds.append(active)
+
+    host_share = (
+        metrics.host_talk_ratio / (1 + metrics.host_talk_ratio)
+        if metrics.host_talk_ratio >= 0
+        else 0.0
+    )
+    objective_metrics = [
+        {
+            "name": "开放式问题比例",
+            "value": f"{round(metrics.open_ratio * 100)}%",
+            "ideal": "≥ 60%",
+            "inRange": metrics.open_ratio >= 0.6,
+        },
+        {
+            "name": "有效追问率",
+            "value": f"{round(metrics.probe_rate * 100)}%",
+            "ideal": "≥ 50%",
+            "inRange": metrics.probe_rate >= 0.5,
+        },
+        {
+            "name": "主持人话语占比",
+            "value": f"{round(host_share * 100)}%",
+            "ideal": "20–35%",
+            "inRange": 0.2 <= host_share <= 0.35,
+        },
+        {
+            "name": "平均问题长度",
+            "value": f"{metrics.avg_q_len:g} 字",
+            "ideal": "≤ 28 字",
+            "inRange": metrics.avg_q_len <= 28,
+        },
+        {
+            "name": "多问合一",
+            "value": f"{metrics.multi_q_count} 次",
+            "ideal": "0 次",
+            "inRange": metrics.multi_q_count == 0,
+        },
+    ]
+    if metrics.filler_top:
+        filler, rate = metrics.filler_top[0]
+        objective_metrics.append(
+            {
+                "name": f"口头禅「{filler}」",
+                "value": f"{rate:g}/句",
+                "ideal": "≤ 0.2/句",
+                "inRange": rate <= 0.2,
+            }
+        )
+
+    raw_advice = review.get("top3_advice", [])
+    advice = (
+        [str(item) for item in raw_advice]
+        if isinstance(raw_advice, Sequence) and not isinstance(raw_advice, (str, bytes))
+        else []
+    )
+    return {
+        "id": report_id,
+        "topic": runtime.dossier.topic,
+        "personaName": runtime.dossier.persona.name,
+        "total": total,
+        "duration": _interview_duration(turns),
+        "dimensions": dimensions,
+        "rounds": rounds,
+        "dossier": dossier,
+        "metrics": objective_metrics,
+        "advice": advice,
+        "comparison": [dict(item) for item in comparison],
+    }
+
+
+def _relative_turn_time(
+    turns: Sequence[Mapping[str, Any]],
+    turn: Mapping[str, Any],
+) -> str:
+    if not turns:
+        return "00:00"
+    try:
+        start = datetime.fromisoformat(str(turns[0].get("ts")))
+        current = datetime.fromisoformat(str(turn.get("ts")))
+    except ValueError:
+        return "00:00"
+    seconds = max(0, round((current - start).total_seconds()))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def _interview_duration(turns: Sequence[Mapping[str, Any]]) -> str:
+    if len(turns) < 2:
+        return "00:00"
+    try:
+        start = datetime.fromisoformat(str(turns[0].get("ts")))
+        end = datetime.fromisoformat(str(turns[-1].get("ts")))
+    except ValueError:
+        return "00:00"
+    seconds = max(0, round((end - start).total_seconds()))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
 def build_router(orchestrator: Orchestrator) -> APIRouter:
@@ -731,6 +1004,7 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
             return await orchestrator.create_session(
                 payload.scenario_id,
                 payload.persona_id,
+                payload.student_id,
             )
         except (ScenarioNotFound, PersonaNotFound) as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -775,5 +1049,12 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except InvalidSessionState as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @router.get("/review/{report_id}")
+    async def get_review(report_id: str) -> dict[str, Any]:
+        try:
+            return orchestrator.get_review(report_id)
+        except ReportNotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     return router

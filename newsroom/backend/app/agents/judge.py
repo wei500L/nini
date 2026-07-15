@@ -88,6 +88,7 @@ async def generate_judge_report(
     metrics: Metrics,
     *,
     trace_id: str,
+    previous_top3_advice: Sequence[str] = (),
 ) -> JudgeReport:
     """Judge a complete interview while keeping objective scoring in code.
 
@@ -122,6 +123,11 @@ async def generate_judge_report(
                 "dossier_json": dossier.model_dump_json(indent=2),
                 "validation_errors_json": json.dumps(
                     validation_errors,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "previous_top3_advice_json": json.dumps(
+                    list(previous_top3_advice),
                     ensure_ascii=False,
                     indent=2,
                 ),
@@ -160,12 +166,14 @@ class Judge:
         transcript: Any,
         metrics: Metrics,
         trace_id: str = "judge",
+        previous_top3_advice: Sequence[str] = (),
     ) -> JudgeReport:
         return await generate_judge_report(
             dossier,
             transcript,
             metrics,
             trace_id=trace_id,
+            previous_top3_advice=previous_top3_advice,
         )
 
 

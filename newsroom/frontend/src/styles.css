@@ -1085,6 +1085,44 @@ summary:focus-visible {
 .missed-callout p { margin: 0; color: #b5a17e; font-size: 10px; line-height: 1.5; }
 .missed-callout strong { margin-right: 4px; color: #e7b65c; }
 
+.session-comparison { margin-top: 42px; }
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: #111318;
+  border: 1px solid var(--line);
+}
+.comparison-item {
+  position: relative;
+  min-width: 0;
+  padding: 16px;
+  border-right: 1px solid var(--line-soft);
+}
+.comparison-item:last-child { border-right: 0; }
+.comparison-item > span { color: #858b95; font-size: 9px; }
+.comparison-item > div { display: flex; align-items: center; gap: 7px; margin-top: 12px; }
+.comparison-item small { color: #6f7580; font: 14px/1 Consolas, monospace; }
+.comparison-item strong { font: 24px/1 Georgia, serif; }
+.comparison-item svg { color: #747a84; }
+.comparison-item em {
+  position: absolute;
+  top: 15px;
+  right: 14px;
+  color: #747a84;
+  font: normal 9px/1 Consolas, monospace;
+}
+.comparison-item.is-up svg,
+.comparison-item.is-up em { color: #69b38a; }
+.comparison-item.is-down svg,
+.comparison-item.is-down em { color: #e06d64; }
+.comparison-empty {
+  padding: 22px;
+  color: #777d87;
+  background: #111318;
+  border: 1px dashed #32363e;
+  font-size: 10px;
+}
+
 .replay-section { margin-top: 58px; }
 
 .section-title {
@@ -1267,6 +1305,8 @@ summary:focus-visible {
   .director-panel { grid-column: 1 / -1; min-height: 520px; border-top: 1px solid var(--line); }
   .history-list { max-height: 320px; }
   .review-overview, .review-lower-grid { grid-template-columns: 1fr; }
+  .comparison-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .comparison-item { border-bottom: 1px solid var(--line-soft); }
 }
 
 @media (max-width: 720px) {
@@ -1296,6 +1336,7 @@ summary:focus-visible {
   .action-compare > div:first-child { border-right: 0; border-bottom: 1px solid #32363e; }
   .metrics-table th, .metrics-table td { padding-left: 8px; padding-right: 8px; }
   .metrics-table th:first-child { width: 31%; }
+  .comparison-grid { grid-template-columns: 1fr 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

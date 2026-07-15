@@ -75,6 +75,14 @@ export type ObjectiveMetric = {
   inRange: boolean;
 };
 
+export type SessionComparison = {
+  name: string;
+  current: number;
+  previous: number;
+  delta: number;
+  direction: "up" | "down" | "same";
+};
+
 export type ReviewData = {
   id: string;
   topic: string;
@@ -86,4 +94,5 @@ export type ReviewData = {
   dossier: DossierFact[];
   metrics: ObjectiveMetric[];
   advice: string[];
+  comparison: SessionComparison[];
 };

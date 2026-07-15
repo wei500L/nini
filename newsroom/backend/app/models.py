@@ -36,8 +36,21 @@ class Scenario(SQLModel, table=True):
 class Profile(SQLModel, table=True):
     __tablename__ = "profile"
 
-    id: str = Field(primary_key=True)
-    weaknesses_json: dict[str, Any] = Field(
+    student_id: str = Field(primary_key=True)
+    sessions_count: int = Field(default=0, ge=0)
+    metrics_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False),
+    )
+    chronic_weaknesses: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False),
+    )
+    filler_blacklist: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False),
+    )
+    persona_records: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON, nullable=False),
     )
@@ -49,7 +62,11 @@ class Session(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     scenario_id: str = Field(foreign_key="scenario.id", index=True)
-    profile_id: str | None = Field(default=None, foreign_key="profile.id", index=True)
+    profile_id: str | None = Field(
+        default=None,
+        foreign_key="profile.student_id",
+        index=True,
+    )
     started_at: datetime = Field(default_factory=utc_now)
     ended_at: datetime | None = None
 

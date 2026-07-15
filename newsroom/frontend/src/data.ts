@@ -21,6 +21,13 @@ export const demoReview: ReviewData = {
     "每轮只保留一个问题，减少背景复述，给嘉宾留下明确答题空间。",
     "当导播提示时间线有缺口时，先钉死顺序，再切换到关系线。",
   ],
+  comparison: [
+    { name: "问题设计", previous: 16, current: 19, delta: 3, direction: "up" },
+    { name: "倾听追问", previous: 16, current: 20, delta: 4, direction: "up" },
+    { name: "现场控制", previous: 16, current: 15, delta: -1, direction: "down" },
+    { name: "语言表达", previous: 11, current: 11, delta: 0, direction: "same" },
+    { name: "信息收获", previous: 5, current: 7, delta: 2, direction: "up" },
+  ],
   rounds: [
     {
       round: 1,

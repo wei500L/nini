@@ -155,6 +155,7 @@ class JudgeAgentTests(unittest.IsolatedAsyncioTestCase):
                 TRANSCRIPT,
                 METRICS,
                 trace_id="judge-valid",
+                previous_top3_advice=["缩短问题", "接住原话", "继续追问"],
             )
 
         self.assertIsInstance(report, JudgeReport)
@@ -182,6 +183,7 @@ class JudgeAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"closed_count": 1', prompt)
         self.assertIn('"closed_percentage": 33.3', prompt)
         self.assertIn('"facts_found": 4', prompt)
+        self.assertIn('"缩短问题"', prompt)
 
     async def test_nonexistent_turn_is_retried_with_validation_error(self) -> None:
         invalid = valid_draft(self.dossier).model_copy(deep=True)

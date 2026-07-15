@@ -107,12 +107,16 @@ class DirectorAgentTests(unittest.IsolatedAsyncioTestCase):
                 "请继续。",
                 guest_output(action="tell"),
                 trace_id="director-tell",
+                chronic_weaknesses=["问题太长", "不追问"],
             )
 
         self.assertTrue(result.should_speak)
         self.assertEqual(result.urgency, 3)
         self.assertLessEqual(len(result.hint), 15)
         self.assertEqual(mocked_chat.await_args.kwargs["model_tier"], "fast")
+        prompt = mocked_chat.await_args.args[0][0]["content"]
+        self.assertIn('"问题太长"', prompt)
+        self.assertIn('"不追问"', prompt)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ async def generate_director_hint(
     guest_output: GuestOutput,
     *,
     trace_id: str,
+    chronic_weaknesses: Sequence[str] = (),
 ) -> DirectorHint:
     """Generate one earpiece hint and enforce all director hard constraints."""
 
@@ -74,6 +75,11 @@ async def generate_director_hint(
                     "must_be_silent_for_correct_follow_up": on_track,
                     "throttled": throttled,
                 },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "chronic_weaknesses_json": json.dumps(
+                list(chronic_weaknesses),
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -159,6 +165,7 @@ class Director:
         host_message: str,
         guest_output: GuestOutput | Awaitable[GuestOutput],
         trace_id: str,
+        chronic_weaknesses: Sequence[str] = (),
     ) -> DirectorHint:
         if isinstance(guest_output, GuestOutput):
             resolved_guest_output = guest_output
@@ -171,6 +178,7 @@ class Director:
             host_message,
             resolved_guest_output,
             trace_id=trace_id,
+            chronic_weaknesses=chronic_weaknesses,
         )
 
 

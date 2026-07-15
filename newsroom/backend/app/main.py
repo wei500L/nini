@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI
 from sqlmodel import SQLModel, create_engine
 
+from app.agents.judge import Judge
 from app.orchestrator import Orchestrator, build_router
 
 
@@ -13,7 +14,7 @@ SQLModel.metadata.create_all(engine)
 
 
 app = FastAPI(title="newsroom")
-orchestrator = Orchestrator(engine)
+orchestrator = Orchestrator(engine, judge=Judge())
 app.include_router(build_router(orchestrator))
 
 

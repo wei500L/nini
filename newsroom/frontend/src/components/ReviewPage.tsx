@@ -1,13 +1,16 @@
 import {
   Activity,
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   Check,
   ChevronDown,
   CircleGauge,
   FileWarning,
   Headphones,
   Lightbulb,
+  Minus,
   Target,
   X,
 } from "lucide-react";
@@ -110,6 +113,7 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
     [report.rounds],
   );
   const foundFacts = report.dossier.filter((fact) => fact.status === "found").length;
+  const comparison = report.comparison ?? [];
 
   return (
     <main className="review-shell">
@@ -181,6 +185,33 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
               <p><strong>{missedRounds} 轮</strong>导播给出了提示，但你没有照做。</p>
             </div>
           </article>
+        </section>
+
+        <section className="session-comparison" aria-labelledby="comparison-title">
+          <div className="section-title compact">
+            <div>
+              <span className="section-index">↗</span>
+              <div><span className="eyebrow">SESSION-OVER-SESSION</span><h2 id="comparison-title">对比上一场</h2></div>
+            </div>
+            <p>同一评分维度直接对照，向上箭头表示本场进步。</p>
+          </div>
+          {comparison.length > 0 ? (
+            <div className="comparison-grid">
+              {comparison.map((item) => (
+                <article className={`comparison-item is-${item.direction}`} key={item.name}>
+                  <span>{item.name}</span>
+                  <div>
+                    <small>{item.previous}</small>
+                    {item.direction === "up" ? <ArrowUp size={15} /> : item.direction === "down" ? <ArrowDown size={15} /> : <Minus size={15} />}
+                    <strong>{item.current}</strong>
+                  </div>
+                  <em>{item.delta > 0 ? `+${item.delta}` : item.delta} 分</em>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="comparison-empty">这是第一场训练；完成下一场后会在这里显示逐项变化。</div>
+          )}
         </section>
 
         <section className="replay-section">
