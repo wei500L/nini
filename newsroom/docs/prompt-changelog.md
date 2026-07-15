@@ -23,3 +23,9 @@
 - 改了啥：新增 `guest_assess.md` 和 `guest.md`，把 pressure 评分、Persona 数值行为、PRESSURE/GUARD 决策表、tell 表演边界与 revealed 复述规则写成显式约束。
 - 为什么改：Guest agent 需要先稳定识别本轮压力和目标 fact，再基于代码更新后的 guard 生成可复现、不会直接泄密的角色回答。
 - 改完效果：单轮回答按“先 pressure、后 action”的顺序执行；话痨与惜字如金等人设有可测字数和行为边界，tell 只表现破绽而不承认事实。
+
+## v0.5.0 - 2026-07-15
+
+- 改了啥：新增 `director.md`，明确 15 字耳返格式、三轮节流、urgency=3 强制发言、正确追问时静默，以及不得泄露任何未揭示 fact.content 的约束。
+- 为什么改：导播拥有 dossier 与 GuestOutput 的上帝视角，需要及时识别 tell 和采访节奏问题，同时不能把隐藏事实直接喂给学生。
+- 改完效果：导播使用 fast 模型生成短提示，结果再经过代码侧节流、强制发言和 difflib 泄题防护；安全性与节奏不依赖模型自觉。

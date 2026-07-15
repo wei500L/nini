@@ -48,6 +48,13 @@ class GuestOutput(BaseModel):
     stage_direction: str
 
 
+class DirectorHint(BaseModel):
+    should_speak: bool
+    urgency: int = Field(ge=1, le=3)
+    type: Literal["追问", "换角度", "打断他", "让他说完", "收尾", "别问了"]
+    hint: str = Field(max_length=15)
+
+
 class WriterCritique(BaseModel):
     approved: bool
     guard_gradient_ok: bool
