@@ -4,9 +4,23 @@ version = "0.1.0"
 description = "AI simulated interview practice backend"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "av>=16,<19",
     "fastapi>=0.116,<1.0",
     "httpx[socks]>=0.28,<1.0",
     "jieba>=0.42.1,<1.0",
+    "modelscope>=1.30,<2.0",
+    "python-multipart>=0.0.20,<1.0",
+    "requests[socks]>=2.34,<3.0",
     "sqlmodel>=0.0.24,<1.0",
+    "torch>=2.10,<3.0",
+    "transformers>=5.0,<6.0",
     "uvicorn[standard]>=0.35,<1.0",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

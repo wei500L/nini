@@ -1,8 +1,10 @@
 import {
-  ArrowRight,
   Clock3,
+  FileAudio,
   Headphones,
   LockKeyhole,
+  LoaderCircle,
+  Mic,
   Radio,
   Send,
   Square,
@@ -12,6 +14,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useSessionEvents } from "../hooks/useSessionEvents";
+import { useVoiceTranscription } from "../hooks/useVoiceTranscription";
 import { useSessionStore } from "../store";
 import type { DirectorHint } from "../types";
 
@@ -105,16 +108,32 @@ export function StudioPage() {
   const store = useSessionStore();
   const [draft, setDraft] = useState("");
   const [ending, setEnding] = useState(false);
+  const voice = useVoiceTranscription((text) => {
+    setDraft((current) =>
+      [current.trim(), text.trim()].filter(Boolean).join(" ").slice(0, 300),
+    );
+  });
   const activeToast = store.hints.find(
     (hint) => hint.id === store.activeToastId,
   );
   const canSend =
     draft.trim().length > 0 &&
     !store.inputLocked &&
+    voice.state === "idle" &&
+    (store.state === "LIVE" || store.state === "WRAPPING");
+  const voiceEnabled =
+    !store.inputLocked &&
     (store.state === "LIVE" || store.state === "WRAPPING");
 
   useEffect(() => {
     if (!requestedSessionId) window.location.replace("/");
+  }, [requestedSessionId]);
+
+  useEffect(() => {
+    if (!requestedSessionId) return;
+    void fetch("/api/transcription/warmup", { method: "POST" }).catch(() => {
+      // The upload action reports a concrete error if warmup actually failed.
+    });
   }, [requestedSessionId]);
 
   useEffect(() => {
@@ -240,13 +259,52 @@ export function StudioPage() {
 
           <footer className="composer-wrap">
             {store.error && <div className="inline-error"><WifiOff size={14} /> {store.error}</div>}
+            {voice.error && <div className="inline-error"><WifiOff size={14} /> {voice.error}</div>}
             {store.inputLocked && (
               <div className="input-lock"><LockKeyhole size={13} /> 嘉宾回应中，输入已锁定</div>
             )}
+            <div className="voice-toolbar">
+              <button
+                className={`voice-record${voice.state === "recording" ? " is-recording" : ""}`}
+                type="button"
+                disabled={!voiceEnabled || voice.state === "transcribing"}
+                onClick={() =>
+                  voice.state === "recording"
+                    ? voice.stopRecording()
+                    : void voice.startRecording()
+                }
+              >
+                {voice.state === "recording" ? <Square size={12} fill="currentColor" /> : <Mic size={15} />}
+                {voice.state === "recording"
+                  ? `停止录音 ${formatClock(voice.seconds)}`
+                  : "麦克风提问"}
+              </button>
+              <label className={`voice-upload${voice.state !== "idle" || !voiceEnabled ? " is-disabled" : ""}`}>
+                <FileAudio size={15} /> 上传音频
+                <input
+                  accept="audio/*,video/webm,video/mp4"
+                  disabled={voice.state !== "idle" || !voiceEnabled}
+                  type="file"
+                  onChange={(event) => {
+                    voice.uploadFile(event.target.files?.[0] ?? null);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+              <span className="voice-state">
+                {voice.state === "transcribing" ? (
+                  <><LoaderCircle className="spin" size={13} /> 本地 Whisper 正在转录，首次使用需加载模型</>
+                ) : voice.lastResult ? (
+                  `已转录 ${voice.lastResult.duration_seconds.toFixed(1)} 秒 · ${voice.lastResult.device}`
+                ) : (
+                  "录音停止后先回填文字，确认后再发送"
+                )}
+              </span>
+            </div>
             <div className={`composer${store.inputLocked ? " is-locked" : ""}`}>
               <textarea
                 aria-label="输入采访问题"
-                disabled={store.inputLocked || store.state === "BRIEFING"}
+                disabled={!voiceEnabled || voice.state === "recording"}
                 maxLength={300}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {

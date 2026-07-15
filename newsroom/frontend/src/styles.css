@@ -973,6 +973,70 @@ summary:focus-visible {
   font-size: 10px;
 }
 
+.voice-toolbar {
+  min-height: 31px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.voice-record,
+.voice-upload {
+  min-height: 29px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid #383d46;
+  border-radius: 2px;
+  color: #b9bec7;
+  background: #171a20;
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.voice-record:hover:not(:disabled),
+.voice-upload:hover:not(.is-disabled) {
+  border-color: #676d78;
+  color: var(--text);
+}
+
+.voice-record.is-recording {
+  color: #ffaaa3;
+  border-color: #8b3732;
+  background: #2a1718;
+  animation: recordingPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes recordingPulse {
+  50% { border-color: #e14b3f; }
+}
+
+.voice-record:disabled,
+.voice-upload.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.44;
+}
+
+.voice-upload input {
+  display: none;
+}
+
+.voice-state {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: #747a85;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 40px;
