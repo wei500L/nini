@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import math
 import struct
+import tempfile
 import unittest
 import wave
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
 
 from app.speech.router import build_speech_router
-from app.speech.transcriber import TranscriptionResult, decode_audio
+from app.speech.transcriber import (
+    TranscriptionResult,
+    WhisperConfig,
+    WhisperTranscriber,
+    decode_audio,
+)
 
 
 def wav_tone(*, seconds: float = 0.25, sample_rate: int = 16_000) -> bytes:
@@ -63,6 +71,27 @@ class AudioDecodeTests(unittest.TestCase):
         self.assertEqual(audio.dtype.name, "float32")
         self.assertGreater(len(audio), 3_000)
 
+    def test_cached_weight_checksum_is_verified(self) -> None:
+        weight_bytes = b"verified model weights"
+        with tempfile.TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            model_file = model_dir / "model.safetensors"
+            model_file.write_bytes(weight_bytes)
+            config = WhisperConfig(
+                model_id="test/whisper",
+                revision="test-revision",
+                model_sha256=hashlib.sha256(weight_bytes).hexdigest(),
+                cache_dir=model_dir,
+                device="cpu",
+                default_language="zh",
+                max_audio_seconds=90,
+            )
+            transcriber = WhisperTranscriber(config)
+
+            self.assertTrue(transcriber._model_checksum_matches(model_dir))
+            model_file.write_bytes(b"damaged model weights")
+            self.assertFalse(transcriber._model_checksum_matches(model_dir))
+
 
 class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_warmup_reports_loaded_device(self) -> None:
@@ -92,6 +121,27 @@ class SpeechApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["text"], "这是一次真实转录")
         self.assertEqual(response.json()["device"], "cuda:0")
+
+    async def test_generic_mime_with_audio_extension_is_decoded(self) -> None:
+        app = FastAPI()
+        app.include_router(build_speech_router(FakeTranscriber()))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/api/transcription",
+                files={
+                    "audio": (
+                        "question.wav",
+                        wav_tone(),
+                        "application/octet-stream",
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text"], "这是一次真实转录")
 
     async def test_non_audio_upload_is_rejected(self) -> None:
         app = FastAPI()

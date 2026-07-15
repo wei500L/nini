@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import threading
@@ -14,6 +15,10 @@ from app.llm.config import BACKEND_ROOT, read_env_file
 
 
 WhisperDevice = Literal["auto", "cpu", "cuda"]
+DEFAULT_WHISPER_MODEL_ID = "openai-mirror/whisper-medium"
+DEFAULT_WHISPER_MODEL_SHA256 = (
+    "62f73550fa6db24b0c6f6c5962bd0dae80fa644e93cde9cd9c3792971b47fd28"
+)
 
 
 class AudioDecodeError(ValueError):
@@ -33,6 +38,7 @@ class TranscriptionResult(BaseModel):
 class WhisperConfig:
     model_id: str
     revision: str
+    model_sha256: str | None
     cache_dir: Path
     device: WhisperDevice
     default_language: str
@@ -56,15 +62,28 @@ def load_whisper_config(env_file: Path | None = None) -> WhisperConfig:
     max_audio_seconds = float(env("WHISPER_MAX_AUDIO_SECONDS", "90"))
     if max_audio_seconds <= 0:
         raise ValueError("WHISPER_MAX_AUDIO_SECONDS must be positive")
+    model_id = env("WHISPER_MODEL_ID", DEFAULT_WHISPER_MODEL_ID).strip()
+    model_sha256 = env(
+        "WHISPER_MODEL_SHA256",
+        DEFAULT_WHISPER_MODEL_SHA256
+        if model_id == DEFAULT_WHISPER_MODEL_ID
+        else "",
+    ).strip().lower()
+    if model_sha256 and (
+        len(model_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in model_sha256)
+    ):
+        raise ValueError(
+            "WHISPER_MODEL_SHA256 must be a 64-character SHA-256 hex digest"
+        )
+
     return WhisperConfig(
-        model_id=env(
-            "WHISPER_MODEL_ID",
-            "openai-mirror/whisper-medium",
-        ).strip(),
+        model_id=model_id,
         revision=env(
             "WHISPER_MODEL_REVISION",
             "574419aa496bc40cf70f53700b6d25435824740d",
         ).strip(),
+        model_sha256=model_sha256 or None,
         cache_dir=cache_dir.resolve(),
         device=cast(WhisperDevice, device_value),
         default_language=env("WHISPER_LANGUAGE", "zh").strip() or "zh",
@@ -85,11 +104,13 @@ class WhisperTranscriber:
         self._device = "not-loaded"
         self._dtype: Any | None = None
         self._last_error: str | None = None
+        self._model_integrity = "not-checked"
 
     def status(self) -> dict[str, Any]:
         return {
             "model_id": self.config.model_id,
             "model_revision": self.config.revision,
+            "model_integrity": self._model_integrity,
             "loaded": self._model is not None,
             "device": self._device,
             "default_language": self.config.default_language,
@@ -150,19 +171,11 @@ class WhisperTranscriber:
                 download_options = {
                     "cache_dir": str(self.config.cache_dir),
                     "allow_patterns": ["*.json", "*.txt", "model.safetensors"],
-                    "revision": self.config.revision,
                 }
-                try:
-                    model_dir = snapshot_download(
-                        self.config.model_id,
-                        local_files_only=True,
-                        **download_options,
-                    )
-                except Exception:
-                    model_dir = snapshot_download(
-                        self.config.model_id,
-                        **download_options,
-                    )
+                model_dir = self._resolve_model_dir(
+                    snapshot_download,
+                    download_options=download_options,
+                )
                 dtype = torch.float16 if use_cuda else torch.float32
                 model = AutoModelForSpeechSeq2Seq.from_pretrained(
                     model_dir,
@@ -183,6 +196,63 @@ class WhisperTranscriber:
             except Exception as error:
                 self._last_error = f"{type(error).__name__}: {error}"
                 raise
+
+    def _resolve_model_dir(
+        self,
+        snapshot_download: Any,
+        *,
+        download_options: dict[str, Any],
+    ) -> str:
+        """Return a cached/downloaded snapshot only after weight integrity checks.
+
+        ModelScope may cache the same immutable revision under both its commit hash
+        and ``master``. Trying both paths lets a known-good cache recover from one
+        damaged snapshot without deleting or silently accepting corrupted weights.
+        """
+
+        revisions = [self.config.revision]
+        if self.config.model_sha256 and self.config.revision != "master":
+            revisions.append("master")
+
+        seen_paths: set[Path] = set()
+        errors: list[str] = []
+        for local_files_only in (True, False):
+            for revision in revisions:
+                try:
+                    model_dir = Path(
+                        snapshot_download(
+                            self.config.model_id,
+                            revision=revision,
+                            local_files_only=local_files_only,
+                            **download_options,
+                        )
+                    ).resolve()
+                except Exception as error:
+                    errors.append(f"{revision}: {type(error).__name__}")
+                    continue
+                if model_dir in seen_paths:
+                    continue
+                seen_paths.add(model_dir)
+                if self._model_checksum_matches(model_dir):
+                    self._model_integrity = (
+                        "verified" if self.config.model_sha256 else "unchecked"
+                    )
+                    return str(model_dir)
+                errors.append(f"{revision}: model.safetensors checksum mismatch")
+
+        details = "; ".join(errors[-4:]) or "no model snapshot available"
+        raise RuntimeError(f"Whisper model integrity check failed: {details}")
+
+    def _model_checksum_matches(self, model_dir: Path) -> bool:
+        expected = self.config.model_sha256
+        if not expected:
+            return True
+        model_file = model_dir / "model.safetensors"
+        if not model_file.is_file():
+            return False
+        with model_file.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        return actual == expected
 
     def _transcribe_audio(self, audio: Any, *, language: str) -> str:
         torch = self._torch

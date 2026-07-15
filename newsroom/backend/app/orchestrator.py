@@ -367,6 +367,10 @@ class Orchestrator:
 
             profile = load_or_create_profile(db, student_id)
             save_profile(db, profile)
+            # SQLModel rows below do not declare ORM relationships, so explicitly
+            # flush each FK parent before inserting its children. SQLite with
+            # foreign_keys=ON otherwise may schedule fact_state before session.
+            db.flush()
             session_id = uuid4().hex
             db.add(
                 InterviewSession(
@@ -380,6 +384,7 @@ class Orchestrator:
                     wrapping_seconds=self.wrapping_seconds,
                 )
             )
+            db.flush()
             for fact in dossier.facts:
                 db.add(
                     FactStateRow(

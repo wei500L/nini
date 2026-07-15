@@ -24,6 +24,7 @@ POST /api/session/{id}/turn
 - 来源：ModelScope
 - 架构：`WhisperForConditionalGeneration`
 - 权重：Safetensors，约 3.06GB
+- 完整性：启动时按 ModelScope 公布的 SHA-256 校验；损坏缓存不会进入推理
 - 本机推理：RTX 5060 / CUDA 13.0 / FP16
 - 音频解码：PyAV，不依赖系统 FFmpeg
 

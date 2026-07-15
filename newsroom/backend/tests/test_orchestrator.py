@@ -35,6 +35,8 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
         SQLModel.metadata.create_all(self.engine)
         self.dossier = Dossier.model_validate_json(
             SEED_PATH.read_text(encoding="utf-8")

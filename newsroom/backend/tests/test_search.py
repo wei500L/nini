@@ -1,14 +1,42 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
+from unittest.mock import patch
 
 import httpx
 
-from app.tools.search import _mcp_search
+from app.tools.search import _mcp_search, _results_from_value, web_search
 
 
 class TavilyMcpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_real_credentials_never_falls_back_to_fixture(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("app.tools.search.read_env_file", return_value={}),
+        ):
+            with self.assertRaisesRegex(ValueError, "required for real search"):
+                await web_search("测试选题")
+
+    def test_invalid_or_empty_results_are_filtered(self) -> None:
+        results = _results_from_value(
+            {
+                "results": [
+                    {"title": "空摘要", "url": "https://example.test/empty"},
+                    {"title": "错误协议", "url": "file:///tmp/a", "content": "内容"},
+                    {
+                        "title": "有效来源",
+                        "url": "https://example.test/valid",
+                        "content": "真实摘要",
+                    },
+                ]
+            },
+            max_results=5,
+        )
+
+        self.assertEqual([result.title for result in results], ["有效来源"])
+
     async def test_mcp_handshake_lists_and_calls_search_tool(self) -> None:
         methods: list[str] = []
 

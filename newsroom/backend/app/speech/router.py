@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
@@ -22,6 +23,15 @@ ALLOWED_AUDIO_TYPES = {
     "audio/webm",
     "video/mp4",
     "video/webm",
+}
+ALLOWED_AUDIO_EXTENSIONS = {
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".wav",
+    ".webm",
 }
 
 
@@ -62,7 +72,11 @@ def build_speech_router(transcriber: SpeechTranscriber) -> APIRouter:
         language: str | None = Query(default=None, min_length=2, max_length=12),
     ) -> TranscriptionResult:
         content_type = (audio.content_type or "").split(";", 1)[0].lower()
-        if content_type not in ALLOWED_AUDIO_TYPES:
+        extension = Path(audio.filename or "").suffix.lower()
+        missing_generic_type = content_type in {"", "application/octet-stream"}
+        if content_type not in ALLOWED_AUDIO_TYPES and not (
+            missing_generic_type and extension in ALLOWED_AUDIO_EXTENSIONS
+        ):
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail="不支持的音频格式，请使用 WebM、WAV、MP3、M4A、MP4、OGG 或 FLAC。",
@@ -93,4 +107,9 @@ def build_speech_router(transcriber: SpeechTranscriber) -> APIRouter:
     return router
 
 
-__all__ = ["ALLOWED_AUDIO_TYPES", "MAX_AUDIO_BYTES", "build_speech_router"]
+__all__ = [
+    "ALLOWED_AUDIO_EXTENSIONS",
+    "ALLOWED_AUDIO_TYPES",
+    "MAX_AUDIO_BYTES",
+    "build_speech_router",
+]

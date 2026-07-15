@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 from app.llm.config import BACKEND_ROOT, read_env_file
 
@@ -18,9 +18,9 @@ SearchMode = Literal["auto", "real", "fixture"]
 
 
 class SearchResult(BaseModel):
-    title: str
-    url: str
-    summary: str
+    title: str = Field(min_length=1)
+    url: str = Field(pattern=r"^https?://")
+    summary: str = Field(min_length=1)
 
 
 async def web_search(
@@ -44,7 +44,7 @@ async def web_search(
     def env(name: str, default: str = "") -> str:
         return os.environ.get(name, env_file.get(name, default))
 
-    mode_value = env("TAVILY_MODE", "auto").strip().lower()
+    mode_value = env("TAVILY_MODE", "real").strip().lower()
     if mode_value not in {"auto", "real", "fixture"}:
         raise ValueError("TAVILY_MODE must be auto, real, or fixture")
     mode = cast(SearchMode, mode_value)
@@ -53,9 +53,7 @@ async def web_search(
 
     api_key = env("TAVILY_API_KEY").strip()
     if not api_key:
-        if mode == "real":
-            raise ValueError("TAVILY_API_KEY is required when TAVILY_MODE=real")
-        return _read_fixture(DEFAULT_FIXTURE_PATH, max_results=max_results)
+        raise ValueError("TAVILY_API_KEY is required for real search")
 
     mcp_url = env("TAVILY_MCP_URL").strip()
     if mcp_url:
@@ -260,20 +258,27 @@ def _search_arguments(
 
 def _results_from_value(value: Any, *, max_results: int) -> list[SearchResult]:
     items = list(_result_items(value))
-    results = [
-        SearchResult(
-            title=str(item.get("title") or item.get("name") or item["url"]),
-            url=str(item["url"]),
-            summary=str(
-                item.get("summary")
-                or item.get("content")
-                or item.get("snippet")
-                or item.get("raw_content")
-                or ""
-            ),
-        )
-        for item in items[:max_results]
-    ]
+    results: list[SearchResult] = []
+    for item in items:
+        url = str(item.get("url") or "").strip()
+        summary = str(
+            item.get("summary")
+            or item.get("content")
+            or item.get("snippet")
+            or item.get("raw_content")
+            or ""
+        ).strip()
+        try:
+            result = SearchResult(
+                title=str(item.get("title") or item.get("name") or url).strip(),
+                url=url,
+                summary=summary,
+            )
+        except ValidationError:
+            continue
+        results.append(result)
+        if len(results) == max_results:
+            break
     if not results:
         raise ValueError("Tavily returned no usable search results")
     return results

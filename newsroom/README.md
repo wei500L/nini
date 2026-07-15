@@ -31,6 +31,16 @@ npm run dev
 `/api` 和 `/health` 请求代理到本机后端。真实外部服务配置保存在被 Git 忽略的
 `backend/.env`。
 
+本机受信任证书可用以下命令生成；Vite 会优先读取
+`frontend/localhost+2.pem` 和 `frontend/localhost+2-key.pem`：
+
+```powershell
+choco install mkcert -y
+mkcert -install
+cd frontend
+mkcert localhost 127.0.0.1 ::1
+```
+
 Whisper 模型首次转录时会从 ModelScope 下载约 3GB 权重到
 `backend/.cache/modelscope`。开发服务默认启用 HTTPS；若浏览器或系统没有信任该
 开发证书，麦克风仍可能被安全策略禁用，此时可先上传音频完成转录。
