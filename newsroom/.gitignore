@@ -1,0 +1,5 @@
+backend/.venv/
+frontend/dist/
+frontend/node_modules/
+__pycache__/
+*.py[cod]
