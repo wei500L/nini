@@ -57,6 +57,8 @@ class LLMConfig:
     models: Mapping[ModelTier, str]
     timeout_seconds: float
     log_dir: Path
+    thinking_type: str | None = None
+    reasoning_effort: str | None = None
 
     def model_for(self, tier: ModelTier) -> str:
         return self.models[tier]
@@ -102,6 +104,8 @@ def load_config(env_file: Path | None = None) -> LLMConfig:
     fast_model = env("LLM_FAST_MODEL") or env(f"{prefix}_FAST_MODEL", defaults.fast_model)
     smart_model = env("LLM_SMART_MODEL") or env(f"{prefix}_SMART_MODEL", defaults.smart_model)
     timeout_seconds = float(env("LLM_TIMEOUT_SECONDS", "60"))
+    thinking_type = env("LLM_THINKING_TYPE").strip() or None
+    reasoning_effort = env("LLM_REASONING_EFFORT").strip() or None
     log_dir_value = env("LLM_LOG_DIR")
     log_dir = Path(log_dir_value) if log_dir_value else PROJECT_ROOT / "docs" / "llm-calls"
 
@@ -112,4 +116,6 @@ def load_config(env_file: Path | None = None) -> LLMConfig:
         models={"fast": fast_model, "smart": smart_model},
         timeout_seconds=timeout_seconds,
         log_dir=log_dir,
+        thinking_type=thinking_type,
+        reasoning_effort=reasoning_effort,
     )

@@ -40,6 +40,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 "LLM_BASE_URL": "https://llm.test/v1",
                 "LLM_FAST_MODEL": "mock-fast",
                 "LLM_SMART_MODEL": "mock-smart",
+                "LLM_THINKING_TYPE": "enabled",
+                "LLM_REASONING_EFFORT": "high",
                 "LLM_LOG_DIR": self.temp_dir.name,
             },
         )
@@ -77,6 +79,18 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result, InterviewAnswer(answer="有效", score=5))
+
+    async def test_reasoning_options_are_sent_to_provider(self) -> None:
+        request_body: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            request_body.update(json.loads(request.content))
+            return completion('{"answer":"有效","score":5}')
+
+        await self.run_chat(handler, trace_id="reasoning-options")
+
+        self.assertEqual(request_body["thinking"], {"type": "enabled"})
+        self.assertEqual(request_body["reasoning_effort"], "high")
 
     async def test_markdown_json_fence_is_removed(self) -> None:
         result = await self.run_chat(

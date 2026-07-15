@@ -30,7 +30,10 @@ class WriterTests(unittest.IsolatedAsyncioTestCase):
         engine = create_engine("sqlite://")
         SQLModel.metadata.create_all(engine)
         with (
-            patch.dict(os.environ, {"TAVILY_API_KEY": ""}),
+            patch.dict(
+                os.environ,
+                {"TAVILY_MODE": "fixture", "TAVILY_API_KEY": ""},
+            ),
             patch("app.agents.writer.chat", llm),
             Session(engine) as db,
         ):

@@ -1,0 +1,32 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "请严格按照以下 JSON Schema 输出：\n\n{\n  \"properties\": {\n    \"status\": {\n      \"title\": \"Status\",\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"status\"\n  ],\n  \"title\": \"SmokeResult\",\n  \"type\": \"object\"\n}\n\n只输出 JSON，不要 markdown 代码块"
+    },
+    {
+      "role": "user",
+      "content": "只返回 JSON：status 字段必须是 ok"
+    }
+  ],
+  "raw_response": "{\"status\": \"ok\"}",
+  "parsed": {
+    "status": "ok"
+  },
+  "model": "deepseek-v4-pro",
+  "latency_ms": 1506,
+  "usage": {
+    "prompt_tokens": 88,
+    "completion_tokens": 33,
+    "total_tokens": 121,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 26
+    },
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 88
+  },
+  "retry_count": 0
+}

@@ -25,7 +25,6 @@ import {
   Tooltip,
 } from "recharts";
 
-import { demoReview } from "../data";
 import type { DimensionScore, ReviewData } from "../types";
 
 function ScoreTooltip({
@@ -83,30 +82,47 @@ function ScoreRadar({ dimensions }: { dimensions: DimensionScore[] }) {
 }
 
 export function ReviewPage({ reviewId }: { reviewId: string }) {
-  const [report, setReport] = useState<ReviewData>(demoReview);
-  const [usingPreview, setUsingPreview] = useState(reviewId === "demo");
+  const [report, setReport] = useState<ReviewData | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (reviewId === "demo") return;
     let cancelled = false;
     fetch(`/api/review/${reviewId}`)
       .then((response) => {
-        if (!response.ok) throw new Error("review not found");
+        if (!response.ok) throw new Error("真实复盘不存在或尚未生成完成。");
         return response.json() as Promise<ReviewData>;
       })
       .then((data) => {
-        if (!cancelled) {
-          setReport(data);
-          setUsingPreview(false);
-        }
+        if (!cancelled) setReport(data);
       })
-      .catch(() => {
-        if (!cancelled) setUsingPreview(true);
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : "复盘加载失败。");
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [reviewId]);
+
+  if (error) {
+    return (
+      <main className="route-state">
+        <FileWarning size={28} />
+        <h1>复盘加载失败</h1>
+        <p>{error}</p>
+        <a href="/">返回首页</a>
+      </main>
+    );
+  }
+  if (!report) {
+    return (
+      <main className="route-state">
+        <Activity className="spin" size={28} />
+        <h1>正在读取真实复盘</h1>
+      </main>
+    );
+  }
 
   const missedRounds = useMemo(
     () => report.rounds.filter((round) => round.director && !round.followed).length,
@@ -127,12 +143,6 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
       </header>
 
       <div className="review-page">
-        {usingPreview && reviewId !== "demo" && (
-          <div className="preview-notice">
-            当前报告接口尚未返回数据，暂以完整示例展示复盘结构。
-          </div>
-        )}
-
         <section className="review-hero">
           <div className="review-hero__copy">
             <span className="eyebrow">INTERVIEW DEBRIEF · 访谈复盘</span>

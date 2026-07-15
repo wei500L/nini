@@ -231,7 +231,7 @@ class CreateSessionRequest(BaseModel):
 
 
 class TurnRequest(BaseModel):
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=300)
 
 
 class SessionSnapshot(BaseModel):
@@ -240,8 +240,10 @@ class SessionSnapshot(BaseModel):
     persona_id: str
     student_id: str
     state: SessionState
+    topic: str
     surface_bio: str
     persona_name: str
+    facts_total: int
     duration_seconds: int
     briefing_seconds: int
     report_id: str | None = None
@@ -421,9 +423,24 @@ class Orchestrator:
                 director_hint = (
                     director_output.hint if director_output.should_speak else None
                 )
+                director_event = (
+                    {
+                        "text": director_output.hint,
+                        "source": "director",
+                        "urgency": director_output.urgency,
+                        "type": director_output.type,
+                    }
+                    if director_output.should_speak
+                    else None
+                )
             elif director_output is None or isinstance(director_output, str):
                 # Keep compatibility with injected Task 4 test doubles.
                 director_hint = director_output
+                director_event = (
+                    {"text": director_output, "source": "director"}
+                    if director_output
+                    else None
+                )
             else:
                 raise TypeError(
                     "director.observe() must return DirectorHint, str, or None"
@@ -455,7 +472,7 @@ class Orchestrator:
                 self._publish(
                     runtime,
                     "director_hint",
-                    {"text": director_hint, "source": "director"},
+                    director_event or {"text": director_hint, "source": "director"},
                 )
 
             return TurnResponse(
@@ -819,8 +836,10 @@ class Orchestrator:
             persona_id=runtime.persona_id,
             student_id=runtime.student_id,
             state=runtime.state,
+            topic=runtime.dossier.topic,
             surface_bio=runtime.dossier.surface_bio,
             persona_name=runtime.dossier.persona.name,
+            facts_total=len(runtime.dossier.facts),
             duration_seconds=round(runtime.duration_seconds),
             briefing_seconds=round(runtime.briefing_seconds),
             report_id=runtime.report_id,
@@ -1029,6 +1048,13 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @router.get("/session/{session_id}", response_model=SessionSnapshot)
+    async def get_session(session_id: str) -> SessionSnapshot:
+        try:
+            return orchestrator.get_snapshot(session_id)
+        except SessionNotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     @router.post("/session/{session_id}/turn", response_model=TurnResponse)
     async def submit_turn(session_id: str, payload: TurnRequest) -> TurnResponse:

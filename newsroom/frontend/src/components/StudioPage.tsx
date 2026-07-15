@@ -45,6 +45,7 @@ function DirectorCard({ hint, toast = false }: { hint: DirectorHint; toast?: boo
 
 function Conversation() {
   const messages = useSessionStore((state) => state.messages);
+  const personaName = useSessionStore((state) => state.personaName);
   const feedRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,7 +71,7 @@ function Conversation() {
           </div>
           <div className="message-content">
             <div className="message-meta">
-              <span>{message.role === "host" ? "主持人 · 你" : "周启明 · 嘉宾"}</span>
+              <span>{message.role === "host" ? "主持人 · 你" : `${personaName || "嘉宾"} · 嘉宾`}</span>
               <time>{message.timestamp}</time>
             </div>
             <div className="message-bubble">
@@ -113,59 +114,15 @@ export function StudioPage() {
     (store.state === "LIVE" || store.state === "WRAPPING");
 
   useEffect(() => {
+    if (!requestedSessionId) window.location.replace("/");
+  }, [requestedSessionId]);
+
+  useEffect(() => {
     if (!store.activeToastId) return;
     const toastId = store.activeToastId;
     const timer = window.setTimeout(() => store.clearToast(toastId), 8_000);
     return () => window.clearTimeout(timer);
   }, [store.activeToastId, store.clearToast]);
-
-  useEffect(() => {
-    if (!requestedSessionId) return;
-    if (sessionStorage.getItem(`newsroom:session:${requestedSessionId}`)) return;
-    const fallback = {
-      id: requestedSessionId,
-      scenario_id: store.scenarioId,
-      persona_id: "spin_ceo",
-      state: store.state,
-      surface_bio: store.surfaceBio,
-      persona_name: store.personaName,
-      duration_seconds: 480,
-      briefing_seconds: 60,
-      report_id: null,
-    };
-    store.hydrate(fallback);
-    // Only the requested id is significant here; live state comes from SSE.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestedSessionId]);
-
-  const runDemoReply = (guestId: string) => {
-    const speech =
-      "我理解大家对时间线的关注，但项目团队的正常准备不等于提前知道结果。至于具体是哪位同事，我需要回去核实。";
-    const characters = Array.from(speech);
-    let index = 0;
-    window.setTimeout(() => {
-      const timer = window.setInterval(() => {
-        store.appendGuestText(characters[index], guestId);
-        index += 1;
-        if (index >= characters.length) {
-          window.clearInterval(timer);
-          store.finishGuestTurn({
-            action: "tell",
-            targeted_fact: "F1",
-            speech,
-            stage_direction: "停顿片刻，避开了具体人名",
-          }, guestId);
-          const toastId = store.addHint({
-            text: "又把责任推给团队，问他本人何时知情",
-            urgency: 3,
-            type: "追问",
-            source: "director",
-          });
-          window.setTimeout(() => store.clearToast(toastId), 8_000);
-        }
-      }, 24);
-    }, 480);
-  };
 
   const submit = async () => {
     const text = draft.trim();
@@ -173,10 +130,7 @@ export function StudioPage() {
     setDraft("");
     const guestId = store.beginHostTurn(text);
 
-    if (!requestedSessionId) {
-      runDemoReply(guestId);
-      return;
-    }
+    if (!requestedSessionId) return store.failGuestTurn("会话不存在，请返回首页重新开始。");
 
     try {
       const response = await fetch(`/api/session/${requestedSessionId}/turn`, {
@@ -193,10 +147,7 @@ export function StudioPage() {
   const endInterview = async () => {
     if (ending) return;
     setEnding(true);
-    if (!requestedSessionId) {
-      window.location.href = "/review/demo";
-      return;
-    }
+    if (!requestedSessionId) return;
     try {
       const response = await fetch(`/api/session/${requestedSessionId}/end`, {
         method: "POST",
@@ -222,7 +173,7 @@ export function StudioPage() {
         </a>
         <div className="topbar-center">
           <span className="live-indicator"><i /> LIVE</span>
-          <span>某高校食堂承包商更换风波</span>
+          <span>{store.topic || "正在载入真实选题"}</span>
         </div>
         <div className="session-code">
           SESSION&nbsp; {store.sessionId.slice(0, 12).toUpperCase()}
@@ -296,6 +247,7 @@ export function StudioPage() {
               <textarea
                 aria-label="输入采访问题"
                 disabled={store.inputLocked || store.state === "BRIEFING"}
+                maxLength={300}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -350,9 +302,6 @@ export function StudioPage() {
             </div>
           </section>
 
-          <a className="review-shortcut" href="/review/demo">
-            查看示例复盘 <ArrowRight size={15} />
-          </a>
         </aside>
       </div>
     </main>

@@ -59,6 +59,7 @@ async def chat(
                     retry_messages,
                     model=model,
                     stream=False,
+                    config=config,
                 )
             except httpx.HTTPError as error:
                 await _write_log(
@@ -171,11 +172,17 @@ async def _post_chat(
     *,
     model: str,
     stream: bool,
+    config: LLMConfig,
 ) -> tuple[httpx.Response, int]:
     started = perf_counter()
     response = await client.post(
         "/chat/completions",
-        json={"model": model, "messages": list(messages), "stream": stream},
+        json=_request_body(
+            messages,
+            model=model,
+            stream=stream,
+            config=config,
+        ),
     )
     return response, round((perf_counter() - started) * 1000)
 
@@ -197,7 +204,12 @@ def _stream_chat(
                 async with client.stream(
                     "POST",
                     "/chat/completions",
-                    json={"model": model, "messages": list(messages), "stream": True},
+                    json=_request_body(
+                        messages,
+                        model=model,
+                        stream=True,
+                        config=config,
+                    ),
                 ) as response:
                     if response.is_error:
                         error_body = (await response.aread()).decode(errors="replace")
@@ -238,6 +250,25 @@ def _stream_chat(
             )
 
     return generate()
+
+
+def _request_body(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    model: str,
+    stream: bool,
+    config: LLMConfig,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": list(messages),
+        "stream": stream,
+    }
+    if config.thinking_type:
+        body["thinking"] = {"type": config.thinking_type}
+    if config.reasoning_effort:
+        body["reasoning_effort"] = config.reasoning_effort
+    return body
 
 
 def _copy_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

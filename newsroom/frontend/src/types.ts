@@ -28,12 +28,25 @@ export type SessionSnapshot = {
   id: string;
   scenario_id: string;
   persona_id: string;
+  student_id: string;
   state: SessionState;
+  topic: string;
   surface_bio: string;
   persona_name: string;
+  facts_total: number;
   duration_seconds: number;
   briefing_seconds: number;
   report_id: string | null;
+};
+
+export type ScenarioPreview = {
+  scenario_id: string;
+  topic: string;
+  surface_bio: string;
+  persona_id: string;
+  persona_name: string;
+  facts_total: number;
+  created_at: string | null;
 };
 
 export type GuestDonePayload = {
