@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSessionEvents } from "../hooks/useSessionEvents";
 import { useVoiceTranscription } from "../hooks/useVoiceTranscription";
 import { useSessionStore } from "../store";
-import type { DirectorHint } from "../types";
+import type { DirectorHint, GuestDonePayload, SessionSnapshot } from "../types";
 
 const formatClock = (seconds: number) => {
   const safe = Math.max(0, seconds);
@@ -124,6 +124,13 @@ export function StudioPage() {
   const voiceEnabled =
     !store.inputLocked &&
     (store.state === "LIVE" || store.state === "WRAPPING");
+  const canEnd =
+    store.turnCount > 0 &&
+    !store.inputLocked &&
+    voice.state === "idle" &&
+    (store.state === "LIVE" ||
+      store.state === "WRAPPING" ||
+      store.state === "FAILED");
 
   useEffect(() => {
     if (!requestedSessionId) window.location.replace("/");
@@ -155,16 +162,20 @@ export function StudioPage() {
       const response = await fetch(`/api/session/${requestedSessionId}/turn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, request_id: guestId }),
       });
       if (!response.ok) throw new Error("turn request failed");
+      const payload = (await response.json()) as { guest: GuestDonePayload };
+      if (useSessionStore.getState().currentGuestId === guestId) {
+        store.finishGuestTurn(payload.guest, guestId);
+      }
     } catch {
       store.failGuestTurn("发送失败，请检查访谈服务后重试。");
     }
   };
 
   const endInterview = async () => {
-    if (ending) return;
+    if (ending || !canEnd) return;
     setEnding(true);
     if (!requestedSessionId) return;
     try {
@@ -172,8 +183,13 @@ export function StudioPage() {
         method: "POST",
       });
       if (!response.ok) throw new Error("end request failed");
-      const snapshot = (await response.json()) as { report_id?: string };
-      window.location.href = `/review/${snapshot.report_id ?? requestedSessionId}`;
+      const snapshot = (await response.json()) as SessionSnapshot;
+      if (snapshot.state === "FAILED" || !snapshot.report_id) {
+        setEnding(false);
+        store.setError(snapshot.error_message || "复盘生成失败，可以再次结束采访重试。");
+        return;
+      }
+      window.location.href = `/review/${snapshot.report_id}`;
     } catch {
       setEnding(false);
       store.setError("暂时无法结束采访，请稍后重试。");
@@ -249,9 +265,9 @@ export function StudioPage() {
               <span className="eyebrow">STUDIO A · 现场</span>
               <h2>对话流</h2>
             </div>
-            <button className="end-button" type="button" onClick={endInterview} disabled={ending}>
+            <button className="end-button" type="button" onClick={endInterview} disabled={ending || !canEnd}>
               <Square size={12} fill="currentColor" />
-              {ending ? "正在生成复盘" : "结束采访"}
+              {ending ? "正在生成复盘" : store.state === "FAILED" ? "重试复盘" : "结束采访"}
             </button>
           </header>
 

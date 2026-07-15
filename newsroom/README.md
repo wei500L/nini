@@ -25,9 +25,15 @@ npm install
 npm run dev
 ```
 
-同一局域网的设备访问 `http://<本机局域网IP>:5173`。Vite 会把 `/api`
-请求代理到本机后端。真实外部服务配置保存在被 Git 忽略的 `backend/.env`。
+同一局域网的设备访问 `https://<本机局域网IP>:5173`。首次访问需在浏览器中
+确认并信任本地开发证书；只有被浏览器视为安全上下文的 HTTPS 页面才能在局域网内
+申请麦克风权限。Vite 会把
+`/api` 和 `/health` 请求代理到本机后端。真实外部服务配置保存在被 Git 忽略的
+`backend/.env`。
 
 Whisper 模型首次转录时会从 ModelScope 下载约 3GB 权重到
-`backend/.cache/modelscope`。通过 `localhost` 访问可以直接使用麦克风；普通局域网
-HTTP 地址受浏览器安全策略限制，可以上传音频，或为开发服务配置 HTTPS 后录音。
+`backend/.cache/modelscope`。开发服务默认启用 HTTPS；若浏览器或系统没有信任该
+开发证书，麦克风仍可能被安全策略禁用，此时可先上传音频完成转录。
+
+只在本机做无麦克风页面调试时，可以临时设置 `VITE_HTTPS=false` 后运行前端；
+局域网正式体验不要关闭 HTTPS。

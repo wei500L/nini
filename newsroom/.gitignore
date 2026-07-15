@@ -4,5 +4,6 @@ backend/*.db
 backend/.cache/
 frontend/dist/
 frontend/node_modules/
+docs/llm-calls/
 __pycache__/
 *.py[cod]

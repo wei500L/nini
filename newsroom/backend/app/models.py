@@ -67,6 +67,15 @@ class Session(SQLModel, table=True):
         foreign_key="profile.student_id",
         index=True,
     )
+    persona_id: str | None = Field(default=None, index=True)
+    state: str = Field(default="BRIEFING", index=True)
+    briefing_deadline: datetime | None = None
+    live_deadline: datetime | None = None
+    duration_seconds: float = Field(default=480.0, gt=0)
+    briefing_seconds: float = Field(default=60.0, ge=0)
+    wrapping_seconds: float = Field(default=60.0, ge=0)
+    report_id: str | None = Field(default=None, index=True)
+    error_message: str | None = None
     started_at: datetime = Field(default_factory=utc_now)
     ended_at: datetime | None = None
 

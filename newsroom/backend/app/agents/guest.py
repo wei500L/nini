@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, Field
 
 from app.agents.guest_state import (
@@ -57,7 +58,7 @@ async def generate_guest_response(
             values=shared_values,
             trace_id=f"{trace_id}-assess",
         )
-    except SchemaViolation:
+    except (SchemaViolation, httpx.HTTPError):
         return _fallback_output(
             dossier=dossier,
             fact=None,
@@ -106,7 +107,7 @@ async def generate_guest_response(
             values=response_values,
             trace_id=f"{trace_id}-answer",
         )
-    except SchemaViolation:
+    except (SchemaViolation, httpx.HTTPError):
         output = _fallback_output(
             dossier=dossier,
             fact=fact,

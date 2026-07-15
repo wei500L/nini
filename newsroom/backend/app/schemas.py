@@ -1,6 +1,19 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+class SourceSnapshot(BaseModel):
+    title: str = Field(min_length=1)
+    url: str = Field(pattern=r"^https?://")
+    summary: str = Field(min_length=1)
+    retrieved_at: datetime
+
+
+class FactEvidence(BaseModel):
+    source_url: str = Field(pattern=r"^https?://")
+    quote: str = Field(min_length=1)
 
 
 class Fact(BaseModel):
@@ -11,6 +24,7 @@ class Fact(BaseModel):
     unlock_hint: str
     tell: str
     partial: str | None
+    evidence: list[FactEvidence] = Field(default_factory=list)
 
 
 class Persona(BaseModel):
@@ -31,6 +45,7 @@ class Dossier(BaseModel):
     persona: Persona
     facts: list[Fact]
     red_lines: list[str]
+    sources: list[SourceSnapshot] = Field(default_factory=list)
 
 
 class FactState(BaseModel):

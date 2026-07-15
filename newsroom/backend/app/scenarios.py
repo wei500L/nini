@@ -11,7 +11,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session as DatabaseSession
 from sqlmodel import select
 
-from app.agents.writer import generate_dossier
+from app.agents.writer import generate_dossier, persisted_grounding_errors
 from app.llm.exceptions import SchemaViolation
 from app.models import Scenario
 from app.schemas import Dossier
@@ -53,13 +53,13 @@ def build_scenario_router(engine: Engine) -> APIRouter:
     async def list_scenarios() -> list[ScenarioPreview]:
         with DatabaseSession(engine) as db:
             rows = list(db.exec(select(Scenario).order_by(Scenario.created_at.desc())))
-        return [
-            _preview(
-                Dossier.model_validate(row.dossier_json),
-                created_at=row.created_at,
-            )
-            for row in rows
-        ]
+        previews: list[ScenarioPreview] = []
+        for row in rows:
+            dossier = Dossier.model_validate(row.dossier_json)
+            if persisted_grounding_errors(dossier):
+                continue
+            previews.append(_preview(dossier, created_at=row.created_at))
+        return previews
 
     @router.post(
         "/generate",
@@ -77,7 +77,7 @@ def build_scenario_router(engine: Engine) -> APIRouter:
                 )
                 row = db.get(Scenario, dossier.scenario_id)
                 created_at = row.created_at if row is not None else None
-        except (httpx.HTTPError, SchemaViolation, ValueError) as error:
+        except (httpx.HTTPError, SchemaViolation, RuntimeError, ValueError) as error:
             logger.exception("Scenario generation failed trace_id=%s", trace_id)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

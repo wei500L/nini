@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
+import httpx
 from pydantic import BaseModel, Field, model_validator
 
 from app.llm.exceptions import SchemaViolation
@@ -140,7 +141,7 @@ async def generate_judge_report(
                 schema=_JudgeDraft,
                 trace_id=f"{trace_id}-attempt-{attempt + 1}",
             )
-        except SchemaViolation:
+        except (SchemaViolation, httpx.HTTPError):
             break
 
         if not isinstance(result, _JudgeDraft):

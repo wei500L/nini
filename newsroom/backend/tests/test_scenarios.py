@@ -51,6 +51,18 @@ class ScenarioApiTests(unittest.IsolatedAsyncioTestCase):
                     "/api/scenarios/generate",
                     json={"topic": "高校食堂招标争议"},
                 )
+            legacy = dossier.model_copy(
+                update={"scenario_id": "legacy-ungrounded", "sources": []}
+            )
+            with Session(engine) as db:
+                db.add(
+                    Scenario(
+                        id=legacy.scenario_id,
+                        topic=legacy.topic,
+                        dossier_json=legacy.model_dump(mode="json"),
+                    )
+                )
+                db.commit()
             listed = await client.get("/api/scenarios")
 
         self.assertEqual(generated.status_code, 201)

@@ -4,6 +4,7 @@ import type {
   ConversationMessage,
   DirectorHint,
   GuestDonePayload,
+  SessionHistory,
   SessionSnapshot,
   SessionState,
 } from "./types";
@@ -29,6 +30,7 @@ type SessionStore = {
   remainingSeconds: number;
   factsFound: number;
   factsTotal: number;
+  turnCount: number;
   foundFactIds: string[];
   messages: ConversationMessage[];
   hints: DirectorHint[];
@@ -38,6 +40,7 @@ type SessionStore = {
   connection: "idle" | "connecting" | "open" | "error";
   error: string | null;
   hydrate: (snapshot: SessionSnapshot) => void;
+  hydrateHistory: (history: SessionHistory) => void;
   setConnection: (connection: SessionStore["connection"]) => void;
   setError: (message: string | null) => void;
   setSessionState: (state: SessionState) => void;
@@ -61,6 +64,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   remainingSeconds: 0,
   factsFound: 0,
   factsTotal: 0,
+  turnCount: 0,
   foundFactIds: [],
   messages: [],
   hints: [],
@@ -89,13 +93,63 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           : snapshot.duration_seconds,
       factsFound: 0,
       factsTotal: snapshot.facts_total,
+      turnCount: snapshot.turn_count ?? 0,
       foundFactIds: [],
       messages: [],
       hints: [],
       activeToastId: null,
       currentGuestId: null,
       inputLocked: false,
-      error: null,
+      error: snapshot.error_message ?? null,
+    });
+  },
+  hydrateHistory: (history) => {
+    const messages: ConversationMessage[] = [];
+    const hints: DirectorHint[] = [];
+    for (const turn of history.turns) {
+      const timestamp = new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(new Date(turn.ts));
+      if (turn.role === "host") {
+        messages.push({
+          id: `turn-${turn.idx}`,
+          role: "host",
+          text: turn.content,
+          timestamp,
+        });
+      } else if (turn.role === "guest") {
+        const output = turn.meta_json.guest_output as
+          | { stage_direction?: string }
+          | undefined;
+        messages.push({
+          id: `turn-${turn.idx}`,
+          role: "guest",
+          text: turn.content,
+          timestamp,
+          stageDirection: output?.stage_direction,
+          typing: false,
+        });
+      } else {
+        hints.unshift({
+          id: `turn-${turn.idx}`,
+          text: turn.content,
+          urgency: (turn.meta_json.urgency as 1 | 2 | 3 | undefined) ?? 2,
+          type: turn.meta_json.type as string | undefined,
+          source: turn.meta_json.source as string | undefined,
+          timestamp,
+        });
+      }
+    }
+    set({
+      messages,
+      hints,
+      factsFound: history.facts_found,
+      foundFactIds: history.found_fact_ids,
+      turnCount: messages.filter((message) => message.role === "host").length,
+      currentGuestId: null,
+      inputLocked: false,
     });
   },
   setConnection: (connection) => set({ connection }),
@@ -128,7 +182,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const targetId = guestId ?? state.currentGuestId;
       return {
         messages: state.messages.map((message) =>
-          message.id === targetId
+          message.id === targetId && message.typing !== false
             ? { ...message, text: message.text + text }
             : message,
         ),
@@ -145,11 +199,13 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }
     set((state) => {
       const targetId = guestId ?? state.currentGuestId;
+      const completedPendingTurn = state.currentGuestId === targetId;
       return {
         messages: state.messages.map((message) =>
           message.id === targetId
             ? {
                 ...message,
+                text: payload.speech,
                 stageDirection: payload.stage_direction,
                 typing: false,
               }
@@ -160,6 +216,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         inputLocked: false,
         foundFactIds,
         factsFound: Math.min(foundFactIds.length, state.factsTotal),
+        turnCount: state.turnCount + (completedPendingTurn ? 1 : 0),
       };
     });
   },

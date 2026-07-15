@@ -14,7 +14,7 @@ import {
   Target,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -124,10 +124,9 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
     );
   }
 
-  const missedRounds = useMemo(
-    () => report.rounds.filter((round) => round.director && !round.followed).length,
-    [report.rounds],
-  );
+  const missedRounds = report.rounds.filter(
+    (round) => round.director && round.followed === false,
+  ).length;
   const foundFacts = report.dossier.filter((fact) => fact.status === "found").length;
   const comparison = report.comparison ?? [];
 
@@ -235,7 +234,7 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
 
           <div className="replay-list">
             {report.rounds.map((round) => {
-              const missed = Boolean(round.director && !round.followed);
+              const missed = Boolean(round.director && round.followed === false);
               return (
                 <article className={`replay-round${missed ? " is-missed" : ""}`} key={round.round}>
                   <header className="round-header">
@@ -243,8 +242,10 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
                     <time>{round.timestamp}</time>
                     {missed ? (
                       <span className="missed-badge"><AlertTriangle size={13} /> 未执行提示</span>
-                    ) : round.director ? (
+                    ) : round.director && round.followed === true ? (
                       <span className="followed-badge"><Check size={13} /> 已响应耳返</span>
+                    ) : round.director ? (
+                      <span className="review-id">未自动判定</span>
                     ) : null}
                   </header>
 
@@ -268,7 +269,7 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
                         <p>“{round.director}”</p>
                       </div>
                       <div className="student-action">
-                        <span>{round.followed ? <Check size={14} /> : <X size={14} />} 你实际做了</span>
+                        <span>{round.followed === true ? <Check size={14} /> : round.followed === false ? <X size={14} /> : <Minus size={14} />} 你下一轮实际问了</span>
                         <p>{round.studentAction}</p>
                       </div>
                     </div>
@@ -321,6 +322,17 @@ export function ReviewPage({ reviewId }: { reviewId: string }) {
                     </div>
                     <p>{fact.content}</p>
                     <div className="unlock-hint"><Lightbulb size={14} /> <span>{fact.unlockHint}</span></div>
+                    {(fact.sources ?? []).map((source) => (
+                      <a
+                        className="fact-source"
+                        href={source.url}
+                        key={`${fact.id}-${source.url}`}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        来源证据：{source.quote}
+                      </a>
+                    ))}
                   </article>
                 ))}
               </div>

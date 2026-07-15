@@ -4,7 +4,8 @@ export type SessionState =
   | "LIVE"
   | "WRAPPING"
   | "REVIEW"
-  | "DONE";
+  | "DONE"
+  | "FAILED";
 
 export type ConversationMessage = {
   id: string;
@@ -37,6 +38,8 @@ export type SessionSnapshot = {
   duration_seconds: number;
   briefing_seconds: number;
   report_id: string | null;
+  turn_count: number;
+  error_message: string | null;
 };
 
 export type ScenarioPreview = {
@@ -54,6 +57,8 @@ export type GuestDonePayload = {
   targeted_fact: string | null;
   speech: string;
   stage_direction: string;
+  request_id?: string | null;
+  turn_idx?: number;
 };
 
 export type DimensionScore = {
@@ -70,7 +75,7 @@ export type ReplayRound = {
   stageDirection?: string;
   director?: string;
   studentAction: string;
-  followed: boolean;
+  followed: boolean | null;
 };
 
 export type DossierFact = {
@@ -79,6 +84,7 @@ export type DossierFact = {
   juiciness: number;
   status: "found" | "missed";
   unlockHint: string;
+  sources?: Array<{ url: string; quote: string }>;
 };
 
 export type ObjectiveMetric = {
@@ -108,4 +114,16 @@ export type ReviewData = {
   metrics: ObjectiveMetric[];
   advice: string[];
   comparison: SessionComparison[];
+};
+
+export type SessionHistory = {
+  turns: Array<{
+    idx: number;
+    role: "host" | "guest" | "director";
+    content: string;
+    meta_json: Record<string, unknown>;
+    ts: string;
+  }>;
+  facts_found: number;
+  found_fact_ids: string[];
 };

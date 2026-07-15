@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
+import re
+from uuid import uuid4
 
 from sqlmodel import Session
 
 from app.llm.gateway import chat
 from app.models import Scenario
-from app.schemas import Dossier, WriterCritique
+from app.schemas import Dossier, SourceSnapshot, WriterCritique
 from app.tools.search import SearchResult, web_search
 
 
@@ -35,31 +38,39 @@ async def generate_dossier(
         fixture_path=search_fixture,
     )
 
-    # Step 3: ask the writer model for the first complete dossier.
-    dossier = await _generate_draft(
-        topic=normalized_topic,
-        search_results=search_results,
-        critique_issues=[],
-        trace_id=f"{trace_id}-draft-0",
-    )
-
-    # Step 4 — Reflection（反思）能力：用独立 prompt 和第二次 LLM 调用审查
-    # guard 梯度、unlock_hint 可操作性，以及 facts 与 surface_bio 的一致性。
+    # Step 3/4: generate, verify source grounding in code, then run the independent
+    # Reflection prompt. A rejected or ungrounded dossier is never persisted.
+    critique_issues: list[str] = []
+    dossier: Dossier | None = None
+    approved = False
     for reflection_round in range(MAX_REGENERATION_ROUNDS + 1):
+        dossier = await _generate_draft(
+            topic=normalized_topic,
+            search_results=search_results,
+            critique_issues=critique_issues,
+            trace_id=f"{trace_id}-draft-{reflection_round}",
+        )
+        dossier = _attach_sources(dossier, search_results)
+        grounding_errors = _grounding_errors(dossier, search_results)
+        if grounding_errors:
+            critique_issues = grounding_errors
+            continue
+
         critique = await _criticize_dossier(
             dossier,
             trace_id=f"{trace_id}-reflection-{reflection_round}",
         )
         if _critique_approved(dossier, critique):
+            approved = True
             break
-        if reflection_round == MAX_REGENERATION_ROUNDS:
-            break
-        dossier = await _generate_draft(
-            topic=normalized_topic,
-            search_results=search_results,
-            critique_issues=critique.issues,
-            trace_id=f"{trace_id}-draft-{reflection_round + 1}",
-        )
+        critique_issues = critique.issues
+
+    if dossier is None or not approved:
+        details = "; ".join(critique_issues[:5]) or "independent review rejected dossier"
+        raise ValueError(f"dossier failed truth/playability gate: {details}")
+
+    # IDs are server-owned so a model cannot overwrite an existing scenario.
+    dossier = dossier.model_copy(update={"scenario_id": f"scenario-{uuid4().hex}"})
 
     # Step 5: persist the final dossier after Reflection finishes.
     _save_dossier(db, dossier)
@@ -124,6 +135,87 @@ def _critique_approved(dossier: Dossier, critique: WriterCritique) -> bool:
         and critique.unlock_hints_actionable
         and critique.surface_bio_consistent
     )
+
+
+def _attach_sources(
+    dossier: Dossier,
+    search_results: Sequence[SearchResult],
+) -> Dossier:
+    retrieved_at = datetime.now(UTC)
+    return dossier.model_copy(
+        update={
+            "sources": [
+                SourceSnapshot(
+                    title=result.title,
+                    url=result.url,
+                    summary=result.summary,
+                    retrieved_at=retrieved_at,
+                )
+                for result in search_results
+            ]
+        }
+    )
+
+
+def _grounding_errors(
+    dossier: Dossier,
+    search_results: Sequence[SearchResult],
+) -> list[str]:
+    """Fail closed unless every training fact is a verbatim sourced excerpt."""
+
+    sources = {result.url: result for result in search_results}
+    errors: list[str] = []
+    used_source_urls: set[str] = set()
+    surface = _normalize_evidence(dossier.surface_bio)
+    if not any(
+        surface == _normalize_evidence(result.summary)
+        for result in search_results
+    ):
+        errors.append("surface_bio 必须逐字复制一条来源摘要")
+    for fact in dossier.facts:
+        if not fact.evidence:
+            errors.append(f"{fact.id} 缺少 evidence")
+            continue
+        matching_quote = False
+        for evidence in fact.evidence:
+            source = sources.get(evidence.source_url)
+            if source is None:
+                errors.append(f"{fact.id} 引用了本次搜索结果之外的 URL")
+                continue
+            quote = _normalize_evidence(evidence.quote)
+            if quote != _normalize_evidence(source.summary):
+                errors.append(f"{fact.id} 的 evidence.quote 必须是完整来源摘要")
+                continue
+            if _normalize_evidence(fact.content) == quote:
+                matching_quote = True
+                if evidence.source_url in used_source_urls:
+                    errors.append(f"{fact.id} 与其他 fact 重复使用同一来源")
+                used_source_urls.add(evidence.source_url)
+        if not matching_quote:
+            errors.append(f"{fact.id}.content 必须逐字复制一条 evidence.quote")
+    if len(dossier.facts) < 4:
+        errors.append("facts 至少需要 4 条")
+    return errors
+
+
+def persisted_grounding_errors(dossier: Dossier) -> list[str]:
+    if not dossier.sources:
+        return ["dossier 缺少可审计来源快照"]
+    return _grounding_errors(
+        dossier,
+        [
+            SearchResult(
+                title=source.title,
+                url=source.url,
+                summary=source.summary,
+            )
+            for source in dossier.sources
+        ],
+    )
+
+
+def _normalize_evidence(value: str) -> str:
+    return re.sub(r"\s+", "", value).strip()
 
 
 def _save_dossier(db: Session, dossier: Dossier) -> None:

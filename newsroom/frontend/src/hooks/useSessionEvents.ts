@@ -1,7 +1,12 @@
 import { useEffect, useRef } from "react";
 
 import { useSessionStore } from "../store";
-import type { GuestDonePayload, SessionSnapshot, SessionState } from "../types";
+import type {
+  GuestDonePayload,
+  SessionHistory,
+  SessionSnapshot,
+  SessionState,
+} from "../types";
 
 type ClockPayload = {
   phase: "briefing" | "live";
@@ -26,6 +31,7 @@ export function useSessionEvents(sessionId: string | null) {
   const addHint = useSessionStore((state) => state.addHint);
   const clearToast = useSessionStore((state) => state.clearToast);
   const hydrate = useSessionStore((state) => state.hydrate);
+  const hydrateHistory = useSessionStore((state) => state.hydrateHistory);
   const setConnection = useSessionStore((state) => state.setConnection);
   const setError = useSessionStore((state) => state.setError);
 
@@ -67,10 +73,20 @@ export function useSessionEvents(sessionId: string | null) {
       stream = new EventSource(`/api/session/${sessionId}/stream`);
 
       stream.addEventListener("state_change", (event) => {
-        const { state } = parse<{ state: SessionState }>(
+        const { state, error_message, report_id } = parse<{
+          state: SessionState;
+          error_message?: string;
+          report_id?: string;
+        }>(
           event as MessageEvent<string>,
         );
         setSessionState(state);
+        if (state === "FAILED") {
+          setError(error_message || "会话处理失败，可以重试结束采访。");
+        }
+        if (state === "DONE" && report_id) {
+          window.location.href = `/review/${encodeURIComponent(report_id)}`;
+        }
       });
       stream.addEventListener("clock", (event) => {
         const payload = parse<ClockPayload>(event as MessageEvent<string>);
@@ -88,11 +104,28 @@ export function useSessionEvents(sessionId: string | null) {
       stream.addEventListener("guest_done", (event) => {
         const guestId = useSessionStore.getState().currentGuestId ?? undefined;
         const payload = parse<GuestDonePayload>(event as MessageEvent<string>);
+        if (!guestId) {
+          void fetch(`/api/session/${sessionId}/history`)
+            .then((response) => response.ok ? response.json() : Promise.reject())
+            .then((history: SessionHistory) => hydrateHistory(history))
+            .catch(() => undefined);
+          return;
+        }
         if (characterQueue.current.length > 0) {
           pendingDone.current = { payload, guestId };
         } else {
           finishGuestTurn(payload, guestId);
         }
+      });
+      stream.addEventListener("session_error", (event) => {
+        const payload = parse<{ message: string }>(event as MessageEvent<string>);
+        setError(payload.message);
+      });
+      stream.addEventListener("report_ready", (event) => {
+        const { report_id } = parse<{ report_id: string }>(
+          event as MessageEvent<string>,
+        );
+        window.location.href = `/review/${encodeURIComponent(report_id)}`;
       });
       stream.addEventListener("director_hint", (event) => {
         const payload = parse<DirectorPayload>(event as MessageEvent<string>);
@@ -113,14 +146,15 @@ export function useSessionEvents(sessionId: string | null) {
 
     const initialize = async () => {
       try {
-        const cached = sessionStorage.getItem(`newsroom:session:${sessionId}`);
-        if (cached) {
-          hydrate(JSON.parse(cached) as SessionSnapshot);
-        } else {
-          const response = await fetch(`/api/session/${sessionId}`);
-          if (!response.ok) throw new Error("session not found");
-          hydrate((await response.json()) as SessionSnapshot);
+        const [snapshotResponse, historyResponse] = await Promise.all([
+          fetch(`/api/session/${sessionId}`),
+          fetch(`/api/session/${sessionId}/history`),
+        ]);
+        if (!snapshotResponse.ok || !historyResponse.ok) {
+          throw new Error("session not found");
         }
+        hydrate((await snapshotResponse.json()) as SessionSnapshot);
+        hydrateHistory((await historyResponse.json()) as SessionHistory);
         connect();
       } catch {
         if (!cancelled) {
@@ -148,6 +182,7 @@ export function useSessionEvents(sessionId: string | null) {
     clearToast,
     finishGuestTurn,
     hydrate,
+    hydrateHistory,
     sessionId,
     setClock,
     setConnection,

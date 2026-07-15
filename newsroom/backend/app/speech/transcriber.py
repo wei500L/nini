@@ -32,6 +32,7 @@ class TranscriptionResult(BaseModel):
 @dataclass(frozen=True)
 class WhisperConfig:
     model_id: str
+    revision: str
     cache_dir: Path
     device: WhisperDevice
     default_language: str
@@ -60,6 +61,10 @@ def load_whisper_config(env_file: Path | None = None) -> WhisperConfig:
             "WHISPER_MODEL_ID",
             "openai-mirror/whisper-medium",
         ).strip(),
+        revision=env(
+            "WHISPER_MODEL_REVISION",
+            "574419aa496bc40cf70f53700b6d25435824740d",
+        ).strip(),
         cache_dir=cache_dir.resolve(),
         device=cast(WhisperDevice, device_value),
         default_language=env("WHISPER_LANGUAGE", "zh").strip() or "zh",
@@ -84,6 +89,7 @@ class WhisperTranscriber:
     def status(self) -> dict[str, Any]:
         return {
             "model_id": self.config.model_id,
+            "model_revision": self.config.revision,
             "loaded": self._model is not None,
             "device": self._device,
             "default_language": self.config.default_language,
@@ -144,6 +150,7 @@ class WhisperTranscriber:
                 download_options = {
                     "cache_dir": str(self.config.cache_dir),
                     "allow_patterns": ["*.json", "*.txt", "model.safetensors"],
+                    "revision": self.config.revision,
                 }
                 try:
                     model_dir = snapshot_download(

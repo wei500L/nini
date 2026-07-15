@@ -1721,6 +1721,8 @@ summary:focus-visible {
 .dossier-fact > p { margin: 10px 0; color: #c4c7cd; font-size: 10px; line-height: 1.7; }
 .unlock-hint { display: flex; align-items: flex-start; gap: 7px; padding-top: 9px; color: #90856f; border-top: 1px solid #282b31; font-size: 9px; line-height: 1.55; }
 .unlock-hint svg { flex: 0 0 auto; margin-top: 1px; color: #c69340; }
+.fact-source { display: block; margin-top: 9px; color: #8ab4f8; font-size: 9px; line-height: 1.55; text-decoration: none; }
+.fact-source:hover { text-decoration: underline; }
 
 @media (max-width: 1050px) {
   .studio-shell { height: auto; min-height: 100vh; overflow: visible; }

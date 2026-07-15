@@ -22,6 +22,15 @@ async function errorMessage(response: Response, fallback: string) {
   }
 }
 
+function localStudentId() {
+  const key = "newsroom:local-student-id";
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const created = `local-${crypto.randomUUID()}`;
+  localStorage.setItem(key, created);
+  return created;
+}
+
 function ScenarioCard({
   scenario,
   disabled,
@@ -58,6 +67,7 @@ export function LaunchPage() {
   const [generating, setGenerating] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pipelineReady, setPipelineReady] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +90,13 @@ export function LaunchPage() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    fetch("/health")
+      .then((response) => response.ok ? response.json() : Promise.reject())
+      .then((payload: { status?: string }) => setPipelineReady(payload.status === "ok"))
+      .catch(() => setPipelineReady(false));
   }, []);
 
   const generate = async (event: FormEvent) => {
@@ -123,7 +140,7 @@ export function LaunchPage() {
         body: JSON.stringify({
           scenario_id: scenario.scenario_id,
           persona_id: scenario.persona_id,
-          student_id: "local-student",
+          student_id: localStudentId(),
         }),
       });
       if (!response.ok) {
@@ -148,7 +165,7 @@ export function LaunchPage() {
           <span className="brand-mark">N</span>
           <span><strong>NEWSROOM</strong><small>INTERVIEW LAB</small></span>
         </a>
-        <div className="launch-status"><i /> REAL PIPELINE</div>
+        <div className="launch-status"><i /> {pipelineReady === null ? "CHECKING PIPELINE" : pipelineReady ? "PIPELINE READY" : "PIPELINE DEGRADED"}</div>
       </header>
 
       <section className="launch-hero">
@@ -170,7 +187,7 @@ export function LaunchPage() {
         <form className="topic-console" onSubmit={(event) => void generate(event)}>
           <div className="topic-console__heading">
             <div><span>NEW ASSIGNMENT</span><h2>输入采访选题</h2></div>
-            <span className="console-live"><i /> 外部服务已连接</span>
+            <span className="console-live"><i /> {pipelineReady === null ? "正在检查服务配置" : pipelineReady ? "服务配置已就绪" : "服务配置不完整"}</span>
           </div>
           <label htmlFor="topic">你想训练哪一个新闻事件或争议话题？</label>
           <textarea
@@ -193,7 +210,7 @@ export function LaunchPage() {
           </div>
           {generating && (
             <div className="generation-note">
-              <Clock3 size={15} /> 正在检索来源、生成事实梯度并进行独立审稿，通常需要 1–3 分钟。
+              <Clock3 size={15} /> 正在检索来源、逐字核验事实并进行独立审稿，开启高强度推理时通常需要 3–6 分钟。
             </div>
           )}
           {error && <div className="launch-error">{error}</div>}

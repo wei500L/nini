@@ -3,16 +3,17 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import math
-import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.engine import Engine
@@ -22,6 +23,7 @@ from sqlmodel import select
 
 from app.agents.director import Director, DirectorHint
 from app.agents.guest import generate_guest_response
+from app.agents.writer import persisted_grounding_errors
 from app.memory.profile import (
     compare_with_previous_session,
     load_or_create_profile,
@@ -46,6 +48,10 @@ from app.tools.stenographer import Metrics, calculate_metrics
 DEFAULT_BRIEFING_SECONDS = 60.0
 DEFAULT_DURATION_SECONDS = 8 * 60.0
 DEFAULT_WRAPPING_SECONDS = 60.0
+EVENT_HISTORY_LIMIT = 200
+SSE_HEARTBEAT_SECONDS = 15.0
+
+logger = logging.getLogger(__name__)
 
 
 class SessionState(str, Enum):
@@ -55,6 +61,7 @@ class SessionState(str, Enum):
     WRAPPING = "WRAPPING"
     REVIEW = "REVIEW"
     DONE = "DONE"
+    FAILED = "FAILED"
 
 
 ALLOWED_TRANSITIONS: dict[SessionState, SessionState] = {
@@ -75,6 +82,10 @@ class ScenarioNotFound(OrchestratorError):
 
 
 class PersonaNotFound(OrchestratorError):
+    pass
+
+
+class ScenarioNotGrounded(OrchestratorError):
     pass
 
 
@@ -216,12 +227,14 @@ class JudgeAgent(Protocol):
 
 
 class ServerEvent(BaseModel):
+    id: int | None = None
     event: str
     data: dict[str, Any]
 
     def encode(self) -> str:
         payload = json.dumps(self.data, ensure_ascii=False, separators=(",", ":"))
-        return f"event: {self.event}\ndata: {payload}\n\n"
+        event_id = f"id: {self.id}\n" if self.id is not None else ""
+        return f"{event_id}event: {self.event}\ndata: {payload}\n\n"
 
 
 class CreateSessionRequest(BaseModel):
@@ -232,6 +245,7 @@ class CreateSessionRequest(BaseModel):
 
 class TurnRequest(BaseModel):
     text: str = Field(min_length=1, max_length=300)
+    request_id: str | None = Field(default=None, min_length=8, max_length=100)
 
 
 class SessionSnapshot(BaseModel):
@@ -247,6 +261,8 @@ class SessionSnapshot(BaseModel):
     duration_seconds: int
     briefing_seconds: int
     report_id: str | None = None
+    turn_count: int = 0
+    error_message: str | None = None
 
 
 class TurnResponse(BaseModel):
@@ -254,6 +270,12 @@ class TurnResponse(BaseModel):
     state: SessionState
     guest: GuestOutput
     director_hint: str | None
+
+
+class SessionHistory(BaseModel):
+    turns: list[dict[str, Any]]
+    facts_found: int
+    found_fact_ids: list[str]
 
 
 @dataclass
@@ -273,12 +295,17 @@ class _SessionRuntime:
     )
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     subscribers: set[asyncio.Queue[ServerEvent]] = field(default_factory=set)
-    briefing_deadline: float | None = None
-    live_deadline: float | None = None
+    briefing_deadline: datetime | None = None
+    live_deadline: datetime | None = None
     clock_task: asyncio.Task[None] | None = None
     review_task: asyncio.Task[None] | None = None
     wrapping_hint_sent: bool = False
     report_id: str | None = None
+    error_message: str | None = None
+    event_sequence: int = 0
+    event_history: deque[ServerEvent] = field(
+        default_factory=lambda: deque(maxlen=EVENT_HISTORY_LIMIT)
+    )
 
 
 class Orchestrator:
@@ -329,6 +356,10 @@ class Orchestrator:
             if scenario is None:
                 raise ScenarioNotFound(f"scenario not found: {scenario_id}")
             dossier = Dossier.model_validate(scenario.dossier_json)
+            if persisted_grounding_errors(dossier):
+                raise ScenarioNotGrounded(
+                    "该场景缺少可核验来源，不能开始真实访谈"
+                )
             if dossier.persona.id != persona_id:
                 raise PersonaNotFound(
                     f"persona {persona_id!r} is not available for scenario {scenario_id!r}"
@@ -342,6 +373,11 @@ class Orchestrator:
                     id=session_id,
                     scenario_id=scenario_id,
                     profile_id=student_id,
+                    persona_id=persona_id,
+                    state=SessionState.IDLE.value,
+                    duration_seconds=self.duration_seconds,
+                    briefing_seconds=self.briefing_seconds,
+                    wrapping_seconds=self.wrapping_seconds,
                 )
             )
             for fact in dossier.facts:
@@ -367,7 +403,7 @@ class Orchestrator:
             briefing_seconds=self.briefing_seconds,
             wrapping_seconds=self.wrapping_seconds,
         )
-        runtime.briefing_deadline = time.monotonic() + runtime.briefing_seconds
+        runtime.briefing_deadline = utc_now() + timedelta(seconds=runtime.briefing_seconds)
         async with self._registry_lock:
             self._sessions[session_id] = runtime
 
@@ -378,7 +414,12 @@ class Orchestrator:
         )
         return self._snapshot(runtime)
 
-    async def submit_turn(self, session_id: str, text: str) -> TurnResponse:
+    async def submit_turn(
+        self,
+        session_id: str,
+        text: str,
+        request_id: str | None = None,
+    ) -> TurnResponse:
         runtime = self._runtime(session_id)
         normalized_text = text.strip()
         if not normalized_text:
@@ -447,26 +488,46 @@ class Orchestrator:
                 )
 
             rows: list[tuple[TurnRole, str, dict[str, Any]]] = [
-                (TurnRole.host, normalized_text, {}),
+                (TurnRole.host, normalized_text, {"request_id": request_id}),
                 (
                     TurnRole.guest,
                     guest_output.speech,
-                    {"guest_output": guest_output.model_dump(mode="json")},
+                    {
+                        "guest_output": guest_output.model_dump(mode="json"),
+                        "request_id": request_id,
+                    },
                 ),
             ]
             if director_hint:
-                rows.append((TurnRole.director, director_hint, {}))
-            self._persist_turns_and_fact_states(session_id, rows, fact_states)
+                director_metadata = {
+                    "request_id": request_id,
+                    **(director_event or {}),
+                }
+                rows.append((TurnRole.director, director_hint, director_metadata))
+            indexes = self._persist_turns_and_fact_states(
+                session_id,
+                rows,
+                fact_states,
+            )
+            guest_turn_idx = indexes[1]
 
             self._publish(
                 runtime,
                 "guest_delta",
-                {"delta": guest_output.speech},
+                {
+                    "delta": guest_output.speech,
+                    "request_id": request_id,
+                    "turn_idx": guest_turn_idx,
+                },
             )
             self._publish(
                 runtime,
                 "guest_done",
-                guest_output.model_dump(mode="json"),
+                {
+                    **guest_output.model_dump(mode="json"),
+                    "request_id": request_id,
+                    "turn_idx": guest_turn_idx,
+                },
             )
             if director_hint:
                 self._publish(
@@ -487,6 +548,16 @@ class Orchestrator:
         async with runtime.lock:
             if runtime.state == SessionState.DONE:
                 return self._snapshot(runtime)
+
+            if not any(
+                turn["role"] == TurnRole.host for turn in self._load_turns(session_id)
+            ):
+                raise InvalidSessionState("至少完成一轮有效采访后才能结束")
+
+            if runtime.state == SessionState.FAILED:
+                runtime.error_message = None
+                self._set_state(runtime, SessionState.REVIEW)
+                runtime.review_task = None
 
             if runtime.review_task is None:
                 # An early end still traverses the declared linear state graph.
@@ -517,6 +588,26 @@ class Orchestrator:
     def get_snapshot(self, session_id: str) -> SessionSnapshot:
         return self._snapshot(self._runtime(session_id))
 
+    def get_history(self, session_id: str) -> SessionHistory:
+        self._runtime(session_id)
+        turns = self._load_turns(session_id)
+        states = self._load_fact_states(session_id)
+        found = [state.fact_id for state in states if state.revealed == "full"]
+        return SessionHistory(
+            turns=[
+                {
+                    "idx": turn["idx"],
+                    "role": turn["role"].value,
+                    "content": turn["content"],
+                    "meta_json": turn["meta_json"],
+                    "ts": turn["ts"],
+                }
+                for turn in turns
+            ],
+            facts_found=len(found),
+            found_fact_ids=found,
+        )
+
     def get_state_history(self, session_id: str) -> list[SessionState]:
         return list(self._runtime(session_id).state_history)
 
@@ -530,20 +621,39 @@ class Orchestrator:
             raise ReportNotFound(f"report has no public review: {report_id}")
         return public_review
 
-    async def events(self, session_id: str) -> AsyncIterator[ServerEvent]:
+    async def events(
+        self,
+        session_id: str,
+        *,
+        after_event_id: int | None = None,
+    ) -> AsyncIterator[ServerEvent]:
         runtime = self._runtime(session_id)
         queue: asyncio.Queue[ServerEvent] = asyncio.Queue()
         runtime.subscribers.add(queue)
-        queue.put_nowait(
-            ServerEvent(event="state_change", data={"state": runtime.state.value})
-        )
+        if after_event_id is not None:
+            for event in runtime.event_history:
+                if event.id is not None and event.id > after_event_id:
+                    queue.put_nowait(event)
+        initial_state: dict[str, Any] = {"state": runtime.state.value}
+        if runtime.report_id:
+            initial_state["report_id"] = runtime.report_id
+        if runtime.error_message:
+            initial_state["error_message"] = runtime.error_message
+        queue.put_nowait(ServerEvent(event="state_change", data=initial_state))
         clock = self._clock_payload(runtime)
         if clock is not None:
             queue.put_nowait(ServerEvent(event="clock", data=clock))
 
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=SSE_HEARTBEAT_SECONDS,
+                    )
+                except TimeoutError:
+                    yield ServerEvent(event="ping", data={})
+                    continue
                 yield event
                 if event.event == "state_change" and event.data.get("state") == "DONE":
                     return
@@ -556,7 +666,7 @@ class Orchestrator:
                 deadline = runtime.briefing_deadline
                 if deadline is None:
                     return
-                remaining = deadline - time.monotonic()
+                remaining = _seconds_until(deadline)
                 async with runtime.lock:
                     if runtime.state != SessionState.BRIEFING:
                         break
@@ -566,10 +676,10 @@ class Orchestrator:
                         self._clock_data("briefing", remaining),
                     )
                     if remaining <= 0:
-                        self._transition(runtime, SessionState.LIVE)
                         runtime.live_deadline = (
-                            time.monotonic() + runtime.duration_seconds
+                            utc_now() + timedelta(seconds=runtime.duration_seconds)
                         )
+                        self._transition(runtime, SessionState.LIVE)
                         break
                 await asyncio.sleep(min(self.clock_interval, max(remaining, 0.001)))
 
@@ -577,7 +687,7 @@ class Orchestrator:
                 deadline = runtime.live_deadline
                 if deadline is None:
                     return
-                remaining = deadline - time.monotonic()
+                remaining = _seconds_until(deadline)
                 async with runtime.lock:
                     if runtime.state not in {
                         SessionState.LIVE,
@@ -596,13 +706,27 @@ class Orchestrator:
                         self._enter_wrapping(runtime)
                     expired = remaining <= 0
                 if expired:
-                    await self.end_session(runtime.id)
+                    try:
+                        await self.end_session(runtime.id)
+                    except InvalidSessionState as error:
+                        async with runtime.lock:
+                            self._fail_runtime(runtime, str(error))
                     return
                 await asyncio.sleep(min(self.clock_interval, max(remaining, 0.001)))
         except asyncio.CancelledError:
             return
 
     async def _run_review(self, runtime: _SessionRuntime) -> None:
+        try:
+            await self._run_review_inner(runtime)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.exception("Review failed session_id=%s", runtime.id)
+            async with runtime.lock:
+                self._fail_runtime(runtime, "复盘生成失败，可点击结束采访重试")
+
+    async def _run_review_inner(self, runtime: _SessionRuntime) -> None:
         turns = self._load_turns(runtime.id)
         transcript = await self.stenographer.transcribe(turns)
         if not isinstance(transcript, Transcript):
@@ -689,11 +813,15 @@ class Orchestrator:
             if session is None:
                 raise SessionNotFound(f"session not found: {runtime.id}")
             session.ended_at = utc_now()
+            session.report_id = report_id
+            session.error_message = None
             db.add(session)
             db.commit()
 
         async with runtime.lock:
             runtime.report_id = report_id
+            runtime.error_message = None
+            self._publish(runtime, "report_ready", {"report_id": report_id})
             self._transition(runtime, SessionState.DONE)
 
     def _enter_wrapping(self, runtime: _SessionRuntime) -> None:
@@ -719,9 +847,40 @@ class Orchestrator:
             raise InvalidSessionState(
                 f"invalid transition: {runtime.state.value} -> {target.value}"
             )
+        self._set_state(runtime, target)
+
+    def _set_state(self, runtime: _SessionRuntime, target: SessionState) -> None:
         runtime.state = target
         runtime.state_history.append(target)
-        self._publish(runtime, "state_change", {"state": target.value})
+        self._persist_runtime(runtime)
+        payload: dict[str, Any] = {"state": target.value}
+        if runtime.report_id:
+            payload["report_id"] = runtime.report_id
+        if runtime.error_message:
+            payload["error_message"] = runtime.error_message
+        self._publish(runtime, "state_change", payload)
+
+    def _fail_runtime(self, runtime: _SessionRuntime, message: str) -> None:
+        runtime.error_message = message
+        self._set_state(runtime, SessionState.FAILED)
+        self._publish(runtime, "session_error", {"message": message})
+
+    def _persist_runtime(self, runtime: _SessionRuntime) -> None:
+        with DatabaseSession(self.engine) as db:
+            row = db.get(InterviewSession, runtime.id)
+            if row is None:
+                raise SessionNotFound(f"session not found: {runtime.id}")
+            row.state = runtime.state.value
+            row.persona_id = runtime.persona_id
+            row.briefing_deadline = runtime.briefing_deadline
+            row.live_deadline = runtime.live_deadline
+            row.duration_seconds = runtime.duration_seconds
+            row.briefing_seconds = runtime.briefing_seconds
+            row.wrapping_seconds = runtime.wrapping_seconds
+            row.report_id = runtime.report_id
+            row.error_message = runtime.error_message
+            db.add(row)
+            db.commit()
 
     def _load_turns(self, session_id: str) -> list[dict[str, Any]]:
         with DatabaseSession(self.engine) as db:
@@ -766,7 +925,7 @@ class Orchestrator:
         session_id: str,
         rows: Sequence[tuple[TurnRole, str, dict[str, Any]]],
         fact_states: Sequence[FactState] | None,
-    ) -> None:
+    ) -> list[int]:
         with DatabaseSession(self.engine) as db:
             last_idx = db.exec(
                 select(func.max(Turn.idx)).where(Turn.session_id == session_id)
@@ -795,6 +954,7 @@ class Orchestrator:
                     row.revealed = RevealedState(state.revealed)
                     db.add(row)
             db.commit()
+        return [next_idx + offset for offset in range(len(rows))]
 
     def _publish(
         self,
@@ -802,17 +962,25 @@ class Orchestrator:
         event: str,
         data: dict[str, Any],
     ) -> None:
-        message = ServerEvent(event=event, data=data)
+        runtime.event_sequence += 1
+        message = ServerEvent(
+            id=runtime.event_sequence,
+            event=event,
+            data=data,
+        )
+        runtime.event_history.append(message)
         for queue in tuple(runtime.subscribers):
             queue.put_nowait(message)
 
     def _clock_payload(self, runtime: _SessionRuntime) -> dict[str, Any] | None:
-        now = time.monotonic()
         if runtime.state == SessionState.BRIEFING and runtime.briefing_deadline:
-            return self._clock_data("briefing", runtime.briefing_deadline - now)
+            return self._clock_data(
+                "briefing",
+                _seconds_until(runtime.briefing_deadline),
+            )
         if runtime.state in {SessionState.LIVE, SessionState.WRAPPING}:
             if runtime.live_deadline is not None:
-                return self._clock_data("live", runtime.live_deadline - now)
+                return self._clock_data("live", _seconds_until(runtime.live_deadline))
         return None
 
     @staticmethod
@@ -825,11 +993,72 @@ class Orchestrator:
     def _runtime(self, session_id: str) -> _SessionRuntime:
         try:
             return self._sessions[session_id]
-        except KeyError as error:
-            raise SessionNotFound(f"session not found: {session_id}") from error
+        except KeyError:
+            runtime = self._recover_runtime(session_id)
+            self._sessions[session_id] = runtime
+            return runtime
 
-    @staticmethod
-    def _snapshot(runtime: _SessionRuntime) -> SessionSnapshot:
+    def _recover_runtime(self, session_id: str) -> _SessionRuntime:
+        with DatabaseSession(self.engine) as db:
+            row = db.get(InterviewSession, session_id)
+            if row is None:
+                raise SessionNotFound(f"session not found: {session_id}")
+            scenario = db.get(Scenario, row.scenario_id)
+            if scenario is None:
+                raise ScenarioNotFound(f"scenario not found: {row.scenario_id}")
+            dossier = Dossier.model_validate(scenario.dossier_json)
+            if persisted_grounding_errors(dossier):
+                raise ScenarioNotGrounded(
+                    "该场景缺少可核验来源，不能恢复真实访谈"
+                )
+            student_id = row.profile_id or "local-student"
+            profile = load_or_create_profile(db, student_id)
+            try:
+                state = SessionState(row.state)
+            except ValueError:
+                state = SessionState.FAILED
+            runtime = _SessionRuntime(
+                id=row.id,
+                dossier=dossier,
+                persona_id=row.persona_id or dossier.persona.id,
+                student_id=student_id,
+                chronic_weaknesses=list(profile.chronic_weaknesses),
+                previous_advice=previous_top3_advice(profile),
+                duration_seconds=row.duration_seconds,
+                briefing_seconds=row.briefing_seconds,
+                wrapping_seconds=row.wrapping_seconds,
+                state=state,
+                state_history=[state],
+                briefing_deadline=row.briefing_deadline,
+                live_deadline=row.live_deadline,
+                report_id=row.report_id,
+                error_message=row.error_message,
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return runtime
+        if runtime.state in {
+            SessionState.BRIEFING,
+            SessionState.LIVE,
+            SessionState.WRAPPING,
+        }:
+            runtime.clock_task = loop.create_task(
+                self._run_clock(runtime),
+                name=f"interview-clock-{session_id}-recovered",
+            )
+        elif runtime.state == SessionState.REVIEW:
+            runtime.review_task = loop.create_task(
+                self._run_review(runtime),
+                name=f"interview-review-{session_id}-recovered",
+            )
+        return runtime
+
+    def _snapshot(self, runtime: _SessionRuntime) -> SessionSnapshot:
+        turn_count = sum(
+            turn["role"] == TurnRole.host for turn in self._load_turns(runtime.id)
+        )
         return SessionSnapshot(
             id=runtime.id,
             scenario_id=runtime.dossier.scenario_id,
@@ -843,6 +1072,8 @@ class Orchestrator:
             duration_seconds=round(runtime.duration_seconds),
             briefing_seconds=round(runtime.briefing_seconds),
             report_id=runtime.report_id,
+            turn_count=turn_count,
+            error_message=runtime.error_message,
         )
 
 
@@ -880,6 +1111,13 @@ def _build_public_review(
             "juiciness": fact.juiciness,
             "status": "found" if revealed_by_id.get(fact.id) == "full" else "missed",
             "unlockHint": fact.unlock_hint,
+            "sources": [
+                {
+                    "url": evidence.source_url,
+                    "quote": evidence.quote,
+                }
+                for evidence in fact.evidence
+            ],
         }
         for fact in runtime.dossier.facts
     ]
@@ -899,8 +1137,10 @@ def _build_public_review(
                 "timestamp": _relative_turn_time(turns, turn),
                 "host": str(turn.get("content", "")),
                 "guest": "",
-                "studentAction": str(turn.get("content", "")),
-                "followed": False,
+                "studentAction": "本轮后没有新的提问",
+                "followed": None,
+                "_targetedFact": None,
+                "_directorType": None,
             }
         elif role == "guest" and active is not None:
             active["guest"] = str(turn.get("content", ""))
@@ -909,10 +1149,25 @@ def _build_public_review(
                 guest_output = metadata.get("guest_output", {})
                 if isinstance(guest_output, Mapping) and guest_output.get("stage_direction"):
                     active["stageDirection"] = str(guest_output["stage_direction"])
+                if isinstance(guest_output, Mapping):
+                    active["_targetedFact"] = guest_output.get("targeted_fact")
         elif role == "director" and active is not None:
+            metadata = turn.get("meta_json", {})
+            if isinstance(metadata, Mapping) and metadata.get("source") == "clock":
+                continue
             active["director"] = str(turn.get("content", ""))
+            if isinstance(metadata, Mapping):
+                active["_directorType"] = metadata.get("type")
     if active is not None:
         rounds.append(active)
+
+    for index, round_data in enumerate(rounds):
+        if round_data.get("director") and index + 1 < len(rounds):
+            next_round = rounds[index + 1]
+            round_data["studentAction"] = str(next_round.get("host", ""))
+            round_data["followed"] = _director_followed(round_data, next_round)
+        round_data.pop("_targetedFact", None)
+        round_data.pop("_directorType", None)
 
     host_share = (
         metrics.host_talk_ratio / (1 + metrics.host_talk_ratio)
@@ -983,6 +1238,33 @@ def _build_public_review(
     }
 
 
+def _director_followed(
+    current_round: Mapping[str, Any],
+    next_round: Mapping[str, Any],
+) -> bool | None:
+    """Only make a followed/not-followed claim when code can verify it."""
+
+    hint_type = current_round.get("_directorType")
+    current_target = current_round.get("_targetedFact")
+    next_target = next_round.get("_targetedFact")
+    next_host = str(next_round.get("host", ""))
+    if hint_type == "追问" and current_target is not None:
+        return current_target == next_target
+    if hint_type == "换角度" and current_target is not None:
+        return current_target != next_target and any(
+            marker in next_host
+            for marker in ("为什么", "怎么", "如何", "什么", "哪些", "请谈", "请说明")
+        )
+    if hint_type == "别问了" and current_target is not None:
+        return current_target != next_target
+    if hint_type == "收尾":
+        return any(
+            marker in next_host
+            for marker in ("最后", "总结", "还有什么", "最后一个问题")
+        )
+    return None
+
+
 def _relative_turn_time(
     turns: Sequence[Mapping[str, Any]],
     turn: Mapping[str, Any],
@@ -1010,6 +1292,11 @@ def _interview_duration(turns: Sequence[Mapping[str, Any]]) -> str:
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
+def _seconds_until(deadline: datetime) -> float:
+    normalized = deadline if deadline.tzinfo is not None else deadline.replace(tzinfo=UTC)
+    return (normalized - utc_now()).total_seconds()
+
+
 def build_router(orchestrator: Orchestrator) -> APIRouter:
     router = APIRouter(prefix="/api")
 
@@ -1027,13 +1314,20 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
             )
         except (ScenarioNotFound, PersonaNotFound) as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ScenarioNotGrounded as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @router.get("/session/{session_id}/stream")
-    async def stream_session(session_id: str) -> StreamingResponse:
+    async def stream_session(session_id: str, request: Request) -> StreamingResponse:
         try:
-            events = orchestrator.events(session_id)
+            last_event_id = request.headers.get("last-event-id")
+            after_event_id = int(last_event_id) if last_event_id else None
+            events = orchestrator.events(
+                session_id,
+                after_event_id=after_event_id,
+            )
             orchestrator.get_snapshot(session_id)
-        except SessionNotFound as error:
+        except (SessionNotFound, ValueError) as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
         async def encoded_events() -> AsyncIterator[str]:
@@ -1056,10 +1350,21 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
         except SessionNotFound as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
+    @router.get("/session/{session_id}/history", response_model=SessionHistory)
+    async def get_session_history(session_id: str) -> SessionHistory:
+        try:
+            return orchestrator.get_history(session_id)
+        except SessionNotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
     @router.post("/session/{session_id}/turn", response_model=TurnResponse)
     async def submit_turn(session_id: str, payload: TurnRequest) -> TurnResponse:
         try:
-            return await orchestrator.submit_turn(session_id, payload.text)
+            return await orchestrator.submit_turn(
+                session_id,
+                payload.text,
+                payload.request_id,
+            )
         except SessionNotFound as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except InvalidSessionState as error:

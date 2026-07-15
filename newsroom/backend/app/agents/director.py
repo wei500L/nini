@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 from pydantic import BaseModel
 
 from app.llm.exceptions import SchemaViolation
@@ -93,7 +94,7 @@ async def generate_director_hint(
             schema=DirectorHint,
             trace_id=trace_id,
         )
-    except SchemaViolation:
+    except (SchemaViolation, httpx.HTTPError):
         result = (
             _mandatory_fallback(mandatory_reasons)
             if mandatory_reasons
