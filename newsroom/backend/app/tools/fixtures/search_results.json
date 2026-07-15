@@ -1,0 +1,30 @@
+{
+  "topic": "某高校食堂承包商更换风波",
+  "results": [
+    {
+      "title": "校方宣布更换食堂承包商",
+      "url": "https://fixture.local/campus-notice",
+      "summary": "校方公告称原承包商连续两次食品安全抽检不合格，新承包商惠食餐饮通过公开招标入选，将在暑期完成后厨改造。"
+    },
+    {
+      "title": "学生质疑食堂换约程序与价格承诺",
+      "url": "https://fixture.local/student-report",
+      "summary": "学生媒体梳理发现，招标公告与新承包商进校测量的时间非常接近；学生还担心基础餐价格和现有员工去留。"
+    },
+    {
+      "title": "原承包商回应食品安全抽检争议",
+      "url": "https://fixture.local/former-contractor",
+      "summary": "原承包商承认第一次抽检存在问题，但表示第二次抽检结论尚未送达时，校方已经讨论退场安排，双方对时间线说法不同。"
+    },
+    {
+      "title": "惠食餐饮公布校园业务升级计划",
+      "url": "https://fixture.local/company-release",
+      "summary": "惠食餐饮称将引入统一供应链并投入后厨数字化设备，强调供应商均经过资质审核，但没有公布物流分包商名单。"
+    },
+    {
+      "title": "招标评审名单引发利益关系讨论",
+      "url": "https://fixture.local/review-panel",
+      "summary": "公开评审名单中的一名顾问曾长期服务餐饮行业，多名师生要求校方进一步披露评委与投标企业之间的既往合作关系。"
+    }
+  ]
+}

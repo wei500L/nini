@@ -46,3 +46,11 @@ class GuestOutput(BaseModel):
     action: Literal["reveal", "partial", "tell", "deflect"]
     speech: str
     stage_direction: str
+
+
+class WriterCritique(BaseModel):
+    approved: bool
+    guard_gradient_ok: bool
+    unlock_hints_actionable: bool
+    surface_bio_consistent: bool
+    issues: list[str]

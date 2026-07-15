@@ -62,7 +62,7 @@ class LLMConfig:
         return self.models[tier]
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
+def read_env_file(path: Path) -> dict[str, str]:
     if not path.is_file():
         return {}
 
@@ -81,7 +81,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 
 def load_config(env_file: Path | None = None) -> LLMConfig:
-    file_values = _read_env_file(env_file or BACKEND_ROOT / ".env")
+    file_values = read_env_file(env_file or BACKEND_ROOT / ".env")
 
     def env(name: str, default: str = "") -> str:
         return os.environ.get(name, file_values.get(name, default))
