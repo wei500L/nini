@@ -754,8 +754,11 @@ summary:focus-visible {
 }
 
 .dialogue-panel {
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: 72px minmax(0, 1fr) auto;
+  overflow: hidden;
   border-right: 1px solid var(--line);
   background: #0d0f13;
 }
@@ -803,6 +806,7 @@ summary:focus-visible {
   min-height: 0;
   padding: 24px 30px 32px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scroll-behavior: smooth;
 }
 

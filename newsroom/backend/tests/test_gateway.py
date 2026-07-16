@@ -55,6 +55,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         trace_id: str,
         schema: type[BaseModel] | None = InterviewAnswer,
         stream: bool = False,
+        thinking_disabled: bool = False,
     ):
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler),
@@ -67,6 +68,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 schema=schema,
                 trace_id=trace_id,
                 stream=stream,
+                thinking_disabled=thinking_disabled,
             )
             if stream:
                 return [chunk async for chunk in result]
@@ -91,6 +93,22 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(request_body["thinking"], {"type": "enabled"})
         self.assertEqual(request_body["reasoning_effort"], "high")
+
+    async def test_latency_sensitive_call_disables_thinking(self) -> None:
+        request_body: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            request_body.update(json.loads(request.content))
+            return completion('{"answer":"有效","score":5}')
+
+        await self.run_chat(
+            handler,
+            trace_id="thinking-disabled",
+            thinking_disabled=True,
+        )
+
+        self.assertEqual(request_body["thinking"], {"type": "disabled"})
+        self.assertNotIn("reasoning_effort", request_body)
 
     async def test_markdown_json_fence_is_removed(self) -> None:
         result = await self.run_chat(

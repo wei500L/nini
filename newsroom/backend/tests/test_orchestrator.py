@@ -137,6 +137,29 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
         guest.assert_awaited_once()
         director.assert_awaited_once()
 
+    async def test_guest_provider_chunks_are_published_without_duplicate_delta(
+        self,
+    ) -> None:
+        async def streaming_guest(on_delta, **_: object) -> GuestOutput:
+            await on_delta("流")
+            await on_delta("式")
+            return guest_output().model_copy(update={"speech": "流式"})
+
+        orchestrator, session_id = await self.create_interview(
+            guest=AsyncMock(side_effect=streaming_guest),
+            director=AsyncMock(return_value=None),
+        )
+        await self.wait_for_state(orchestrator, session_id, SessionState.LIVE)
+
+        await orchestrator.submit_turn(session_id, "请说明招标时间线。")
+
+        deltas = [
+            event.data["delta"]
+            for event in orchestrator._sessions[session_id].event_history
+            if event.event == "guest_delta"
+        ]
+        self.assertEqual(deltas, ["流", "式"])
+
     async def test_state_machine_follows_the_declared_order(self) -> None:
         guest = AsyncMock(return_value=guest_output())
         director = AsyncMock(return_value=None)

@@ -23,8 +23,8 @@ class ProviderDefaults:
 PROVIDER_DEFAULTS: dict[ProviderName, ProviderDefaults] = {
     "deepseek": ProviderDefaults(
         base_url="https://api.deepseek.com",
-        fast_model="deepseek-v4-pro",
-        smart_model="deepseek-v4-pro",
+        fast_model="deepseek-v4-flash",
+        smart_model="deepseek-v4-flash",
     ),
     "qwen": ProviderDefaults(
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",

@@ -50,16 +50,28 @@ function Conversation() {
   const messages = useSessionStore((state) => state.messages);
   const personaName = useSessionStore((state) => state.personaName);
   const feedRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
 
   useEffect(() => {
-    feedRef.current?.scrollTo({
-      top: feedRef.current.scrollHeight,
-      behavior: "smooth",
+    if (!stickToBottomRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const feed = feedRef.current;
+      if (feed) feed.scrollTop = feed.scrollHeight;
     });
+    return () => window.cancelAnimationFrame(frame);
   }, [messages]);
 
   return (
-    <div className="conversation-feed" ref={feedRef} aria-live="polite">
+    <div
+      className="conversation-feed"
+      ref={feedRef}
+      aria-live="polite"
+      onScroll={(event) => {
+        const feed = event.currentTarget;
+        stickToBottomRef.current =
+          feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+      }}
+    >
       <div className="conversation-start">
         <span>REC</span>
         访谈记录已开始 · 所有发言将进入复盘

@@ -6,7 +6,7 @@ import json
 import logging
 import math
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -110,6 +110,7 @@ class GuestAgent(Protocol):
         history: list[dict[str, Any]],
         host_message: str,
         trace_id: str,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> GuestOutput: ...
 
 
@@ -138,6 +139,7 @@ class Guest:
         history: list[dict[str, Any]],
         host_message: str,
         trace_id: str,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> GuestOutput:
         return await generate_guest_response(
             dossier,
@@ -145,6 +147,7 @@ class Guest:
             history,
             host_message,
             trace_id=trace_id,
+            on_delta=on_delta,
         )
 
 
@@ -439,6 +442,21 @@ class Orchestrator:
             history = self._load_turns(session_id)
             fact_states = self._load_fact_states(session_id)
             trace_id = f"session-{session_id}-turn-{len(history)}"
+            streamed_guest = False
+
+            async def publish_guest_delta(delta: str) -> None:
+                nonlocal streamed_guest
+                if not delta:
+                    return
+                streamed_guest = True
+                self._publish(
+                    runtime,
+                    "guest_delta",
+                    {
+                        "delta": delta,
+                        "request_id": request_id,
+                    },
+                )
 
             # Start both adapters together. The real director awaits guest_task so
             # it can inspect GuestOutput, then uses the fast model for its cue.
@@ -449,6 +467,7 @@ class Orchestrator:
                     history=history,
                     host_message=normalized_text,
                     trace_id=f"{trace_id}-guest",
+                    on_delta=publish_guest_delta,
                 )
             )
             guest_output, director_output = await asyncio.gather(
@@ -516,15 +535,16 @@ class Orchestrator:
             )
             guest_turn_idx = indexes[1]
 
-            self._publish(
-                runtime,
-                "guest_delta",
-                {
-                    "delta": guest_output.speech,
-                    "request_id": request_id,
-                    "turn_idx": guest_turn_idx,
-                },
-            )
+            if not streamed_guest:
+                self._publish(
+                    runtime,
+                    "guest_delta",
+                    {
+                        "delta": guest_output.speech,
+                        "request_id": request_id,
+                        "turn_idx": guest_turn_idx,
+                    },
+                )
             self._publish(
                 runtime,
                 "guest_done",

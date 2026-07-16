@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 
 import { useSessionStore } from "../store";
 import type {
@@ -35,37 +35,11 @@ export function useSessionEvents(sessionId: string | null) {
   const setConnection = useSessionStore((state) => state.setConnection);
   const setError = useSessionStore((state) => state.setError);
 
-  const characterQueue = useRef<Array<{ character: string; guestId: string }>>([]);
-  const typewriterTimer = useRef<number | null>(null);
-  const pendingDone = useRef<{
-    payload: GuestDonePayload;
-    guestId?: string;
-  } | null>(null);
-
   useEffect(() => {
     if (!sessionId) return;
 
     let cancelled = false;
     let stream: EventSource | null = null;
-
-    const startTypewriter = () => {
-      if (typewriterTimer.current !== null) return;
-      typewriterTimer.current = window.setInterval(() => {
-        const next = characterQueue.current.shift();
-        if (next) appendGuestText(next.character, next.guestId);
-        if (characterQueue.current.length === 0) {
-          window.clearInterval(typewriterTimer.current ?? undefined);
-          typewriterTimer.current = null;
-          if (pendingDone.current) {
-            finishGuestTurn(
-              pendingDone.current.payload,
-              pendingDone.current.guestId,
-            );
-            pendingDone.current = null;
-          }
-        }
-      }, 24);
-    };
 
     const connect = () => {
       if (cancelled) return;
@@ -93,17 +67,20 @@ export function useSessionEvents(sessionId: string | null) {
         setClock(payload.phase, payload.remaining_seconds);
       });
       stream.addEventListener("guest_delta", (event) => {
-        const { delta } = parse<{ delta: string }>(event as MessageEvent<string>);
-        const guestId = useSessionStore.getState().currentGuestId;
+        const { delta, request_id } = parse<{
+          delta: string;
+          request_id?: string | null;
+        }>(event as MessageEvent<string>);
+        const guestId = request_id ?? useSessionStore.getState().currentGuestId;
         if (!guestId) return;
-        characterQueue.current.push(
-          ...Array.from(delta).map((character) => ({ character, guestId })),
-        );
-        startTypewriter();
+        appendGuestText(delta, guestId);
       });
       stream.addEventListener("guest_done", (event) => {
-        const guestId = useSessionStore.getState().currentGuestId ?? undefined;
         const payload = parse<GuestDonePayload>(event as MessageEvent<string>);
+        const guestId =
+          payload.request_id ??
+          useSessionStore.getState().currentGuestId ??
+          undefined;
         if (!guestId) {
           void fetch(`/api/session/${sessionId}/history`)
             .then((response) => response.ok ? response.json() : Promise.reject())
@@ -111,11 +88,7 @@ export function useSessionEvents(sessionId: string | null) {
             .catch(() => undefined);
           return;
         }
-        if (characterQueue.current.length > 0) {
-          pendingDone.current = { payload, guestId };
-        } else {
-          finishGuestTurn(payload, guestId);
-        }
+        finishGuestTurn(payload, guestId);
       });
       stream.addEventListener("session_error", (event) => {
         const payload = parse<{ message: string }>(event as MessageEvent<string>);
@@ -169,12 +142,6 @@ export function useSessionEvents(sessionId: string | null) {
     return () => {
       cancelled = true;
       stream?.close();
-      characterQueue.current = [];
-      pendingDone.current = null;
-      if (typewriterTimer.current !== null) {
-        window.clearInterval(typewriterTimer.current);
-        typewriterTimer.current = null;
-      }
     };
   }, [
     addHint,

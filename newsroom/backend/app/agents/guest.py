@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ from app.schemas import Dossier, Fact, FactState, GuestOutput
 
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
+DeltaCallback = Callable[[str], Awaitable[None]]
 
 
 class GuestAssessment(BaseModel):
@@ -37,8 +38,9 @@ async def generate_guest_response(
     host_message: str,
     *,
     trace_id: str,
+    on_delta: DeltaCallback | None = None,
 ) -> GuestOutput:
-    """Generate one non-streaming guest turn and mutate the supplied fact states."""
+    """Generate one guest turn and mutate the supplied fact states."""
 
     normalized_message = host_message.strip()
     if not normalized_message:
@@ -102,21 +104,34 @@ async def generate_guest_response(
         "decision_json": json.dumps(decision, ensure_ascii=False, indent=2),
     }
 
-    try:
-        output = await _generate_answer(
-            values=response_values,
-            trace_id=f"{trace_id}-answer",
-        )
-    except (SchemaViolation, httpx.HTTPError):
-        output = _fallback_output(
-            dossier=dossier,
-            fact=fact,
-            pressure=assessment.pressure,
-            targeted_fact=assessment.targeted_fact,
-            action=action,
-        )
+    if on_delta is not None:
+        try:
+            output = await _generate_streaming_answer(
+                dossier=dossier,
+                fact=fact,
+                history_data=history_data,
+                host_message=normalized_message,
+                assessment=assessment,
+                action=action,
+                trace_id=f"{trace_id}-answer-stream",
+                on_delta=on_delta,
+            )
+        except (SchemaViolation, httpx.HTTPError, TypeError, ValueError):
+            output = _fallback_output(
+                dossier=dossier,
+                fact=fact,
+                pressure=assessment.pressure,
+                targeted_fact=assessment.targeted_fact,
+                action=action,
+            )
+            await on_delta(output.speech)
     else:
-        if not _matches_decision(output, assessment, action):
+        try:
+            output = await _generate_answer(
+                values=response_values,
+                trace_id=f"{trace_id}-answer",
+            )
+        except (SchemaViolation, httpx.HTTPError):
             output = _fallback_output(
                 dossier=dossier,
                 fact=fact,
@@ -125,7 +140,16 @@ async def generate_guest_response(
                 action=action,
             )
         else:
-            output = _enforce_surface_limits(output, dossier.persona.verbosity)
+            if not _matches_decision(output, assessment, action):
+                output = _fallback_output(
+                    dossier=dossier,
+                    fact=fact,
+                    pressure=assessment.pressure,
+                    targeted_fact=assessment.targeted_fact,
+                    action=action,
+                )
+            else:
+                output = _enforce_surface_limits(output, dossier.persona.verbosity)
 
     record_revelation(state, action)
     return output
@@ -142,6 +166,7 @@ async def _assess_question(
         model_tier="fast",
         schema=GuestAssessment,
         trace_id=trace_id,
+        thinking_disabled=True,
     )
     if not isinstance(result, GuestAssessment):
         raise TypeError("Expected GuestAssessment from validated LLM gateway")
@@ -159,10 +184,115 @@ async def _generate_answer(
         model_tier="smart",
         schema=GuestOutput,
         trace_id=trace_id,
+        thinking_disabled=True,
     )
     if not isinstance(result, GuestOutput):
         raise TypeError("Expected GuestOutput from validated LLM gateway")
     return result
+
+
+async def _generate_streaming_answer(
+    *,
+    dossier: Dossier,
+    fact: Fact | None,
+    history_data: Sequence[Mapping[str, Any]],
+    host_message: str,
+    assessment: GuestAssessment,
+    action: GuestAction,
+    trace_id: str,
+    on_delta: DeltaCallback,
+) -> GuestOutput:
+    authorized_fact = _authorized_fact(fact, action)
+    max_chars = _max_speech_chars(dossier.persona.verbosity)
+    prompt = _render_prompt(
+        "guest_stream.md",
+        {
+            "persona_json": dossier.persona.model_dump_json(indent=2),
+            "surface_bio_json": json.dumps(dossier.surface_bio, ensure_ascii=False),
+            "red_lines_json": json.dumps(dossier.red_lines, ensure_ascii=False),
+            "history_json": json.dumps(
+                list(history_data)[-8:],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "host_message_json": json.dumps(host_message, ensure_ascii=False),
+            "decision_json": json.dumps(
+                {
+                    "pressure": assessment.pressure,
+                    "targeted_fact": assessment.targeted_fact,
+                    "required_action": action,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "authorized_fact_json": json.dumps(
+                authorized_fact,
+                ensure_ascii=False,
+            ),
+            "max_chars": str(max_chars),
+        },
+    )
+    stream = await chat(
+        [{"role": "system", "content": prompt}],
+        model_tier="smart",
+        schema=None,
+        trace_id=trace_id,
+        stream=True,
+        thinking_disabled=True,
+    )
+    if not hasattr(stream, "__aiter__"):
+        raise TypeError("Expected async token stream from LLM gateway")
+
+    parts: list[str] = []
+    emitted_chars = 0
+    try:
+        async for raw_chunk in stream:
+            chunk = str(raw_chunk)
+            remaining = max_chars - emitted_chars
+            if remaining <= 0:
+                continue
+            visible_chunk = chunk[:remaining]
+            if not visible_chunk:
+                continue
+            parts.append(visible_chunk)
+            emitted_chars += len(visible_chunk)
+            await on_delta(visible_chunk)
+    except (httpx.HTTPError, ValueError):
+        if not parts:
+            raise
+
+    speech = "".join(parts).strip()
+    if not speech:
+        raise ValueError("streaming guest returned empty speech")
+    return GuestOutput(
+        pressure=assessment.pressure,
+        targeted_fact=assessment.targeted_fact,
+        action=action,
+        speech=speech,
+        stage_direction=_stream_stage_direction(fact, action),
+    )
+
+
+def _authorized_fact(fact: Fact | None, action: GuestAction) -> str | None:
+    if fact is None:
+        return None
+    if action == "reveal":
+        return fact.content
+    if action == "partial":
+        return fact.partial
+    return None
+
+
+def _max_speech_chars(verbosity: int) -> int:
+    return {1: 25, 2: 60, 3: 120, 4: 180, 5: 250}[verbosity]
+
+
+def _stream_stage_direction(fact: Fact | None, action: GuestAction) -> str:
+    if action == "tell" and fact is not None:
+        return fact.tell.strip()[:40]
+    if action == "deflect":
+        return "稍作停顿"
+    return "语气平稳"
 
 
 def _validate_fact_states(

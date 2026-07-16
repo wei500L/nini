@@ -90,6 +90,48 @@ class GuestStateTests(unittest.TestCase):
 
 
 class GuestAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streaming_answer_emits_provider_chunks_without_hidden_dossier(
+        self,
+    ) -> None:
+        dossier = Dossier.model_validate_json(SEED_PATH.read_text(encoding="utf-8"))
+
+        async def token_stream():
+            yield "这是"
+            yield "公开回答"
+
+        llm = AsyncMock(
+            side_effect=[
+                GuestAssessment(pressure=1, targeted_fact=None),
+                token_stream(),
+            ]
+        )
+        deltas: list[str] = []
+
+        async def collect(delta: str) -> None:
+            deltas.append(delta)
+
+        with patch("app.agents.guest.chat", llm):
+            result = await generate_guest_response(
+                dossier,
+                initial_states(dossier),
+                [],
+                "请介绍公开进展。",
+                trace_id="guest-stream",
+                on_delta=collect,
+            )
+
+        self.assertEqual(deltas, ["这是", "公开回答"])
+        self.assertEqual(result.speech, "这是公开回答")
+        self.assertEqual(result.action, "deflect")
+        stream_prompt = llm.await_args_list[1].args[0][0]["content"]
+        hidden_fact = next(
+            fact.content
+            for fact in dossier.facts
+            if fact.content not in dossier.surface_bio
+        )
+        self.assertNotIn(hidden_fact, stream_prompt)
+        self.assertNotIn("guard_current", stream_prompt)
+
     async def test_six_question_script_obeys_guard_and_persona_rules(self) -> None:
         dossier = Dossier.model_validate_json(SEED_PATH.read_text(encoding="utf-8"))
         states = initial_states(dossier)

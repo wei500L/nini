@@ -28,6 +28,7 @@ async def chat(
     schema: type[BaseModel] | None = None,
     trace_id: str,
     stream: bool = False,
+    thinking_disabled: bool = False,
 ) -> BaseModel | str | AsyncIterator[str]:
     config = load_config()
     model = config.model_for(model_tier)
@@ -44,6 +45,7 @@ async def chat(
             model=model,
             trace_id=trace_id,
             config=config,
+            thinking_disabled=thinking_disabled,
         )
 
     async with _client(config) as client:
@@ -60,6 +62,7 @@ async def chat(
                     model=model,
                     stream=False,
                     config=config,
+                    thinking_disabled=thinking_disabled,
                 )
             except httpx.HTTPError as error:
                 await _write_log(
@@ -173,6 +176,7 @@ async def _post_chat(
     model: str,
     stream: bool,
     config: LLMConfig,
+    thinking_disabled: bool,
 ) -> tuple[httpx.Response, int]:
     started = perf_counter()
     response = await client.post(
@@ -182,6 +186,7 @@ async def _post_chat(
             model=model,
             stream=stream,
             config=config,
+            thinking_disabled=thinking_disabled,
         ),
     )
     return response, round((perf_counter() - started) * 1000)
@@ -193,6 +198,7 @@ def _stream_chat(
     model: str,
     trace_id: str,
     config: LLMConfig,
+    thinking_disabled: bool,
 ) -> AsyncIterator[str]:
     async def generate() -> AsyncIterator[str]:
         raw_parts: list[str] = []
@@ -209,6 +215,7 @@ def _stream_chat(
                         model=model,
                         stream=True,
                         config=config,
+                        thinking_disabled=thinking_disabled,
                     ),
                 ) as response:
                     if response.is_error:
@@ -258,15 +265,18 @@ def _request_body(
     model: str,
     stream: bool,
     config: LLMConfig,
+    thinking_disabled: bool,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
         "messages": list(messages),
         "stream": stream,
     }
-    if config.thinking_type:
+    if thinking_disabled and config.thinking_type:
+        body["thinking"] = {"type": "disabled"}
+    elif config.thinking_type:
         body["thinking"] = {"type": config.thinking_type}
-    if config.reasoning_effort:
+    if config.reasoning_effort and not thinking_disabled:
         body["reasoning_effort"] = config.reasoning_effort
     return body
 

@@ -93,6 +93,7 @@ async def generate_director_hint(
             model_tier="fast",
             schema=DirectorHint,
             trace_id=trace_id,
+            thinking_disabled=True,
         )
     except (SchemaViolation, httpx.HTTPError):
         result = (
